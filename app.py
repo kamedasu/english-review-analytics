@@ -22,8 +22,8 @@ st.set_page_config(page_title="English Review Analytics", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
-def cached_load_reviews(use_sample: bool, refresh: bool):
-    return load_or_fetch_reviews(use_sample=use_sample, refresh=refresh)
+def cached_load_reviews(refresh: bool):
+    return load_or_fetch_reviews(refresh=refresh)
 
 
 def main() -> None:
@@ -31,25 +31,30 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data")
-        use_sample = st.toggle("Use sample data", value=False)
         refresh = st.button("Refresh from Notion", type="primary")
         if refresh:
             cached_load_reviews.clear()
             st.session_state["cache_cleared"] = True
 
     with st.spinner("Loading reviews..."):
-        load_result = cached_load_reviews(use_sample, refresh)
+        load_result = cached_load_reviews(refresh)
 
     reviews = load_result.reviews
     debug = load_result.debug
-    cache_event = resolve_cache_event(debug.loaded_at, use_sample, refresh)
+    cache_event = resolve_cache_event(debug.loaded_at, refresh)
 
     for message in debug.messages:
         st.sidebar.caption(message)
 
+    if any(item.status == "エラー" for item in debug.page_statuses):
+        st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
+
     if not reviews:
         render_debug_status(debug, cache_event, reviews)
-        st.info("レビューがありません。Notion設定またはサンプルデータを確認してください。")
+        if any(item.status == "エラー" for item in debug.page_statuses):
+            st.error("Notionデータを読み込めませんでした。Debug / Statusのerror列を確認してください。")
+        else:
+            st.warning("Notionからレビューが取得できませんでした。Debug / Statusでページ状態とraw markdownを確認してください。")
         return
 
     months = available_months(reviews)
@@ -82,7 +87,7 @@ def main() -> None:
                 }
                 for item in reused
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -91,11 +96,11 @@ def main() -> None:
     if phrase_df.empty:
         st.caption("この月のフレーズカードはありません。")
     else:
-        st.dataframe(phrase_df, use_container_width=True, hide_index=True)
+        st.dataframe(phrase_df, width="stretch", hide_index=True)
 
     st.subheader("Reviews")
     review_df = reviews_to_dataframe(monthly_reviews)
-    st.dataframe(review_df, use_container_width=True, hide_index=True)
+    st.dataframe(review_df, width="stretch", hide_index=True)
 
     with st.expander("Raw Reviews"):
         for review in sorted(monthly_reviews, key=lambda item: item.date, reverse=True):
@@ -103,8 +108,8 @@ def main() -> None:
             st.code(review.raw_markdown, language="markdown")
 
 
-def resolve_cache_event(loaded_at: str, use_sample: bool, refresh: bool) -> str:
-    signature = f"{use_sample}:{refresh}"
+def resolve_cache_event(loaded_at: str, refresh: bool) -> str:
+    signature = str(refresh)
     previous = st.session_state.get("last_load")
     cache_cleared = st.session_state.pop("cache_cleared", False)
 
@@ -121,11 +126,9 @@ def resolve_cache_event(loaded_at: str, use_sample: bool, refresh: bool) -> str:
 
 def render_debug_status(debug, cache_event: str, reviews: list) -> None:
     with st.expander("Debug / Status", expanded=True):
-        cols = st.columns(4)
-        cols[0].metric("Data Source", debug.data_source)
-        cols[1].metric("Use Sample", str(debug.use_sample))
-        cols[2].metric("Refresh", str(debug.refresh_requested))
-        cols[3].metric("Cache", cache_event)
+        cols = st.columns(2)
+        cols[0].metric("Refresh", str(debug.refresh_requested))
+        cols[1].metric("Cache", cache_event)
 
         st.caption(f"Loaded at: {debug.loaded_at}")
 
@@ -145,7 +148,7 @@ def render_debug_status(debug, cache_event: str, reviews: list) -> None:
                     }
                     for item in debug.page_statuses
                 ],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -164,7 +167,7 @@ def render_debug_status(debug, cache_event: str, reviews: list) -> None:
                 }
                 for review in sorted(reviews, key=lambda item: item.date, reverse=True)
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

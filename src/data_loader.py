@@ -14,9 +14,6 @@ from src.storage.state_store import load_state, save_state, should_process_page,
 from src.utils.hashing import content_hash
 
 
-SAMPLE_PATH = DATA_DIR / "raw" / "sample_reviews.md"
-
-
 @dataclass(frozen=True)
 class PageLoadStatus:
     page_id: str
@@ -31,8 +28,6 @@ class PageLoadStatus:
 
 @dataclass(frozen=True)
 class LoadDebugInfo:
-    data_source: str
-    use_sample: bool
     refresh_requested: bool
     cache_event: str = "fresh fetch"
     loaded_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -46,39 +41,28 @@ class LoadResult:
     debug: LoadDebugInfo
 
 
-def load_sample_reviews() -> list[Review]:
-    markdown = SAMPLE_PATH.read_text(encoding="utf-8")
-    return parse_reviews_from_markdown(markdown, source_page_id="sample", source_page_title="Sample 2026-05")
-
-
-def load_or_fetch_reviews(use_sample: bool = False, refresh: bool = False) -> LoadResult:
+def load_or_fetch_reviews(refresh: bool = False) -> LoadResult:
     messages: list[str] = []
     settings = get_settings()
 
-    if use_sample or not settings.notion_api_key or not settings.notion_page_ids:
-        reviews = load_sample_reviews()
-        messages.append("サンプルデータを表示しています。")
-        debug = LoadDebugInfo(
-            data_source="sample",
-            use_sample=use_sample,
-            refresh_requested=refresh,
-            page_statuses=[
-                PageLoadStatus(
-                    page_id="sample",
-                    title="Sample 2026-05",
-                    status="sample",
-                    review_count=len(reviews),
-                    raw_markdown_path=str(SAMPLE_PATH),
-                )
-            ],
-            messages=messages,
+    if not settings.notion_api_key:
+        messages.append("NOTION_API_KEY が設定されていません。")
+    if not settings.notion_page_ids:
+        messages.append("NOTION_PAGE_IDS が設定されていません。")
+    if messages:
+        return LoadResult(
+            reviews=[],
+            debug=LoadDebugInfo(
+                refresh_requested=refresh,
+                page_statuses=[PageLoadStatus(page_id="", status="エラー", error="\n".join(messages))],
+                messages=messages,
+            ),
         )
-        return LoadResult(reviews=reviews, debug=debug)
 
     cached_reviews = load_reviews()
     state = load_state()
     client = NotionClient(settings.notion_api_key)
-    all_reviews = cached_reviews if not refresh else []
+    all_reviews = cached_reviews
     changed_page_ids: set[str] = set()
     page_statuses: list[PageLoadStatus] = []
 
@@ -133,27 +117,15 @@ def load_or_fetch_reviews(use_sample: bool = False, refresh: bool = False) -> Lo
             )
         )
 
-    if changed_page_ids or refresh:
+    if changed_page_ids:
         save_reviews(all_reviews)
         save_state(state)
 
     if not all_reviews:
-        messages.append("レビューが見つからないためサンプルデータを表示しています。")
-        reviews = load_sample_reviews()
-        page_statuses.append(
-            PageLoadStatus(
-                page_id="sample",
-                title="Sample 2026-05",
-                status="fallback_sample",
-                review_count=len(reviews),
-                raw_markdown_path=str(SAMPLE_PATH),
-            )
-        )
+        messages.append("Notionからレビューを取得できませんでした。Debug / Statusでページ状態とraw markdownを確認してください。")
         return LoadResult(
-            reviews=reviews,
+            reviews=[],
             debug=LoadDebugInfo(
-                data_source="sample",
-                use_sample=use_sample,
                 refresh_requested=refresh,
                 page_statuses=page_statuses,
                 messages=messages,
@@ -163,8 +135,6 @@ def load_or_fetch_reviews(use_sample: bool = False, refresh: bool = False) -> Lo
     return LoadResult(
         reviews=sorted(all_reviews, key=lambda review: review.date),
         debug=LoadDebugInfo(
-            data_source="notion",
-            use_sample=use_sample,
             refresh_requested=refresh,
             page_statuses=page_statuses,
             messages=messages,
