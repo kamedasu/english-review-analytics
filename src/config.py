@@ -19,6 +19,7 @@ class Settings:
     notion_api_key: str
     notion_page_ids: list[str]
     openai_api_key: str
+    openai_model: str
     storage_mode: str
     s3_bucket: str
     s3_endpoint_url: str
@@ -31,6 +32,7 @@ def get_settings() -> Settings:
         notion_api_key=os.getenv("NOTION_API_KEY", ""),
         notion_page_ids=_split_csv(os.getenv("NOTION_PAGE_IDS", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         storage_mode=os.getenv("STORAGE_MODE", "local"),
         s3_bucket=os.getenv("S3_BUCKET", ""),
         s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
