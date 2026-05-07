@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.pyo
+.python-version
+
+data/raw/
+data/processed/
+data/state/
+
+.streamlit/secrets.toml

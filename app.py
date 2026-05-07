@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import streamlit as st
+
+from src.analytics import (
+    available_months,
+    duration_by_day,
+    filter_reviews_by_month,
+    phrase_cards_for_reviews,
+    phrases_to_dataframe,
+    reviews_to_dataframe,
+    summarize_month,
+)
+from src.data_loader import load_or_fetch_reviews
+from src.llm_summary import generate_llm_summary_placeholder
+from src.reuse_detector import detect_reused_phrases
+
+
+st.set_page_config(page_title="English Review Analytics", layout="wide")
+
+
+@st.cache_data(show_spinner=False)
+def cached_load_reviews(use_sample: bool, refresh: bool):
+    return load_or_fetch_reviews(use_sample=use_sample, refresh=refresh)
+
+
+def main() -> None:
+    st.title("English Review Analytics")
+
+    with st.sidebar:
+        st.header("Data")
+        use_sample = st.toggle("Use sample data", value=False)
+        refresh = st.button("Refresh from Notion", type="primary")
+        if refresh:
+            cached_load_reviews.clear()
+            st.session_state["cache_cleared"] = True
+
+    with st.spinner("Loading reviews..."):
+        load_result = cached_load_reviews(use_sample, refresh)
+
+    reviews = load_result.reviews
+    debug = load_result.debug
+    cache_event = resolve_cache_event(debug.loaded_at, use_sample, refresh)
+
+    for message in debug.messages:
+        st.sidebar.caption(message)
+
+    if not reviews:
+        render_debug_status(debug, cache_event, reviews)
+        st.info("レビューがありません。Notion設定またはサンプルデータを確認してください。")
+        return
+
+    months = available_months(reviews)
+    selected_month = st.selectbox("Month", months, index=0)
+    monthly_reviews = filter_reviews_by_month(reviews, selected_month)
+    summary = summarize_month(reviews, selected_month)
+    summary.llm_summary = generate_llm_summary_placeholder(summary, monthly_reviews)
+
+    render_debug_status(debug, cache_event, reviews)
+
+    render_metrics(summary)
+
+    daily_duration = duration_by_day(monthly_reviews)
+    if not daily_duration.empty:
+        st.subheader("Study Time")
+        st.bar_chart(daily_duration, x="date", y="duration_minutes")
+
+    st.subheader("Monthly Summary")
+    st.write(summary.llm_summary)
+
+    reused = detect_reused_phrases(monthly_reviews)
+    if reused:
+        st.subheader("Reused Phrase Candidates")
+        st.dataframe(
+            [
+                {
+                    "phrase": item.phrase,
+                    "reused_on": item.reused_on,
+                    "matched_field": item.matched_field,
+                }
+                for item in reused
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Phrase Cards")
+    phrase_df = phrases_to_dataframe(phrase_cards_for_reviews(monthly_reviews))
+    if phrase_df.empty:
+        st.caption("この月のフレーズカードはありません。")
+    else:
+        st.dataframe(phrase_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Reviews")
+    review_df = reviews_to_dataframe(monthly_reviews)
+    st.dataframe(review_df, use_container_width=True, hide_index=True)
+
+    with st.expander("Raw Reviews"):
+        for review in sorted(monthly_reviews, key=lambda item: item.date, reverse=True):
+            st.markdown(f"### {review.date.isoformat()} - {review.topic}")
+            st.code(review.raw_markdown, language="markdown")
+
+
+def resolve_cache_event(loaded_at: str, use_sample: bool, refresh: bool) -> str:
+    signature = f"{use_sample}:{refresh}"
+    previous = st.session_state.get("last_load")
+    cache_cleared = st.session_state.pop("cache_cleared", False)
+
+    if cache_cleared:
+        event = "cache clear + fresh fetch"
+    elif previous and previous.get("signature") == signature and previous.get("loaded_at") == loaded_at:
+        event = "cache hit"
+    else:
+        event = "fresh fetch"
+
+    st.session_state["last_load"] = {"signature": signature, "loaded_at": loaded_at}
+    return event
+
+
+def render_debug_status(debug, cache_event: str, reviews: list) -> None:
+    with st.expander("Debug / Status", expanded=True):
+        cols = st.columns(4)
+        cols[0].metric("Data Source", debug.data_source)
+        cols[1].metric("Use Sample", str(debug.use_sample))
+        cols[2].metric("Refresh", str(debug.refresh_requested))
+        cols[3].metric("Cache", cache_event)
+
+        st.caption(f"Loaded at: {debug.loaded_at}")
+
+        st.markdown("#### Page Load Status")
+        if debug.page_statuses:
+            st.dataframe(
+                [
+                    {
+                        "page_id": item.page_id,
+                        "title": item.title,
+                        "status": item.status,
+                        "review_count": item.review_count,
+                        "last_edited_time": item.last_edited_time or "",
+                        "raw_markdown_path": item.raw_markdown_path,
+                        "error": item.error,
+                        "parser_warnings": "\n".join(item.parser_warnings),
+                    }
+                    for item in debug.page_statuses
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("ページ読み込み情報はありません。")
+
+        st.markdown("#### Parser Result")
+        st.dataframe(
+            [
+                {
+                    "review_id": review.review_id,
+                    "source_page_title": review.source_page_title,
+                    "date": review.date.isoformat(),
+                    "duration_minutes": review.duration_minutes,
+                    "topic": review.topic,
+                    "phrase_cards": len(review.phrase_cards),
+                }
+                for review in sorted(reviews, key=lambda item: item.date, reverse=True)
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("#### Raw Markdown By Page")
+        for item in debug.page_statuses:
+            if not item.raw_markdown_path:
+                continue
+            raw_path = Path(item.raw_markdown_path)
+            label = f"{item.title or item.page_id} ({item.status})"
+            with st.expander(label):
+                if item.parser_warnings:
+                    st.warning("\n".join(item.parser_warnings))
+                if raw_path.exists():
+                    st.caption(str(raw_path))
+                    st.code(raw_path.read_text(encoding="utf-8"), language="markdown")
+                else:
+                    st.warning(f"Raw markdown file not found: {raw_path}")
+
+
+def render_metrics(summary) -> None:
+    cols = st.columns(5)
+    cols[0].metric("Total Study Time", f"{summary.total_duration_minutes} min")
+    cols[1].metric("Study Days", summary.study_days)
+    cols[2].metric("Longest Streak", f"{summary.longest_streak} days")
+    cols[3].metric("New Phrases", summary.phrase_count)
+    cols[4].metric("Reviews", summary.review_count)
+
+
+if __name__ == "__main__":
+    main()

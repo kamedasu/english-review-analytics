@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+import re
+from datetime import date
+
+from src.models import PhraseCard, Review
+from src.utils.dates import parse_date
+from src.utils.hashing import content_hash
+
+
+REVIEW_HEADER_RE = re.compile(r"(?m)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+review\b.*$")
+CARD_HEADER_RE = re.compile(r"(?m)^###\s+Card\s+\d+.*$")
+FieldValue = str | list[str]
+
+
+def split_reviews(markdown: str) -> list[str]:
+    matches = list(REVIEW_HEADER_RE.finditer(markdown))
+    if not matches:
+        return [markdown.strip()] if markdown.strip() else []
+
+    chunks: list[str] = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        chunk = markdown[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def parse_reviews_from_markdown(
+    markdown: str,
+    source_page_id: str = "",
+    source_page_title: str = "",
+    warnings: list[str] | None = None,
+) -> list[Review]:
+    reviews: list[Review] = []
+    for chunk in split_reviews(markdown):
+        review = parse_review(chunk, source_page_id, source_page_title, warnings)
+        if review:
+            reviews.append(review)
+    return reviews
+
+
+def parse_review(
+    markdown: str,
+    source_page_id: str = "",
+    source_page_title: str = "",
+    warnings: list[str] | None = None,
+) -> Review | None:
+    review_date = _extract_review_date(markdown)
+    if review_date is None:
+        _add_warning(warnings, f"{source_page_title or source_page_id}: review date not found.")
+        return None
+
+    body_before_cards = markdown.split("## Phrase Cards", 1)[0]
+    fields = _parse_review_fields(body_before_cards)
+    review_hash = content_hash(markdown)
+    review_id = f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
+
+    phrase_cards = _parse_phrase_cards(markdown, review_id, review_date)
+
+    return Review(
+        review_id=review_id,
+        source_page_id=source_page_id,
+        source_page_title=source_page_title,
+        date=review_date,
+        duration_minutes=_safe_int(fields.get("Duration", "")),
+        topic=_normalize_text_field(fields.get("Topic", "")),
+        good_points=_normalize_list_field(fields.get("Good points", [])),
+        expressions_to_add=_normalize_list_field(fields.get("Expressions to add", [])),
+        expressions_to_use_next_time=_normalize_list_field(fields.get("Expressions to use next time", [])),
+        comment=_normalize_comment(fields.get("Comment", ""), review_id, warnings),
+        phrase_cards=phrase_cards,
+        raw_markdown=markdown,
+        content_hash=review_hash,
+    )
+
+
+def _extract_review_date(markdown: str) -> date | None:
+    date_line = re.search(r"(?m)^-\s*Date:\s*(.+?)\s*$", markdown)
+    if date_line:
+        parsed = parse_date(date_line.group(1))
+        if parsed:
+            return parsed
+
+    header = REVIEW_HEADER_RE.search(markdown)
+    if header:
+        return parse_date(header.group(1).replace("/", "-"))
+    return None
+
+
+def _parse_review_fields(markdown: str) -> dict[str, FieldValue]:
+    fields: dict[str, FieldValue] = {}
+    lines = markdown.splitlines()
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^-\s*([^:]+):\s*(.*)$", line)
+        if not match:
+            index += 1
+            continue
+
+        key = match.group(1).strip()
+        value = match.group(2).strip()
+
+        child_items: list[str] = []
+        next_index = index + 1
+        while next_index < len(lines):
+            child_match = re.match(r"^\s{2,}-\s+(.+)$", lines[next_index])
+            if not child_match:
+                break
+            child_items.append(child_match.group(1).strip())
+            next_index += 1
+
+        fields[key] = child_items if child_items else value
+        index = next_index
+
+    return fields
+
+
+def _parse_phrase_cards(markdown: str, review_id: str, review_date: date) -> list[PhraseCard]:
+    if "## Phrase Cards" not in markdown:
+        return []
+
+    _, cards_text = markdown.split("## Phrase Cards", 1)
+    matches = list(CARD_HEADER_RE.finditer(cards_text))
+    cards: list[PhraseCard] = []
+
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(cards_text)
+        fields = _parse_card_fields(cards_text[start:end])
+        phrase = fields.get("Phrase", "")
+        if not phrase:
+            continue
+        cards.append(
+            PhraseCard(
+                phrase=phrase,
+                meaning=fields.get("Meaning", ""),
+                example=fields.get("Example", ""),
+                next_review_date=parse_date(fields.get("Next review date", "")),
+                priority=fields.get("Priority", ""),
+                source_review_id=review_id,
+                source_review_date=review_date,
+            )
+        )
+    return cards
+
+
+def _parse_card_fields(markdown: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in markdown.splitlines():
+        match = re.match(r"^-\s*([^:]+):\s*(.*)$", line.strip())
+        if match:
+            fields[match.group(1).strip()] = match.group(2).strip()
+    return fields
+
+
+def _normalize_comment(value: FieldValue, review_id: str, warnings: list[str] | None = None) -> str:
+    if isinstance(value, list):
+        _add_warning(warnings, f"{review_id}: Comment was parsed as list and normalized to text.")
+        return "\n".join(item for item in value if item).strip()
+    return value.strip()
+
+
+def _normalize_text_field(value: FieldValue) -> str:
+    if isinstance(value, list):
+        return " ".join(item for item in value if item).strip()
+    return value.strip()
+
+
+def _normalize_list_field(value: FieldValue) -> list[str]:
+    if isinstance(value, list):
+        return [item.strip() for item in value if item.strip()]
+    value = value.strip()
+    return [value] if value else []
+
+
+def _safe_int(value: FieldValue) -> int:
+    if isinstance(value, list):
+        value = " ".join(value)
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else 0
+
+
+def _add_warning(warnings: list[str] | None, message: str) -> None:
+    if warnings is not None:
+        warnings.append(message)
