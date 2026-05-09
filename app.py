@@ -20,7 +20,7 @@ from src.analytics import (
 )
 from src.data_loader import load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
-from src.reuse_detector import detect_reused_phrases, summarize_reused_phrases
+from src.reuse_detector import summarize_reused_phrases
 
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
@@ -97,11 +97,6 @@ def main() -> None:
     review_df = reviews_to_dataframe(period_reviews)
     st.dataframe(review_df, width="stretch", hide_index=True)
 
-    with st.expander("Raw Reviews"):
-        for review in sorted(period_reviews, key=lambda item: item.date, reverse=True):
-            st.markdown(f"### {review.date.isoformat()} - {review.topic}")
-            st.code(review.raw_markdown, language="markdown")
-
 
 def select_period(reviews: list, period_type: str):
     if period_type == "Monthly":
@@ -153,24 +148,6 @@ def render_reused_phrase_candidates(reviews: list) -> None:
         width="stretch",
         hide_index=True,
     )
-
-    raw_reuse = detect_reused_phrases(reviews)
-    with st.expander("Raw Reused Phrase Matches"):
-        st.dataframe(
-            [
-                {
-                    "phrase": item.phrase,
-                    "reused_on": item.reused_on,
-                    "matched_field": item.matched_field,
-                    "first_review_id": item.first_review_id,
-                    "reused_review_id": item.reused_review_id,
-                }
-                for item in raw_reuse
-            ],
-            width="stretch",
-            hide_index=True,
-        )
-
 
 def render_phrase_cards(reviews: list) -> None:
     st.subheader("Phrase Cards")
