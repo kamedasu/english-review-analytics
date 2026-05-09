@@ -122,7 +122,7 @@ def load_or_fetch_reviews(refresh: bool = False) -> LoadResult:
         save_state(state)
 
     if not all_reviews:
-        messages.append("Notionからレビューを取得できませんでした。Debug / Statusでページ状態とraw markdownを確認してください。")
+        messages.append("Notionからレビューを取得できませんでした。サイドバーの取得メッセージとdata/raw/を確認してください。")
         return LoadResult(
             reviews=[],
             debug=LoadDebugInfo(

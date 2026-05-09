@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
 from src.analytics import (
@@ -61,11 +59,10 @@ def main() -> None:
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
 
     if not reviews:
-        render_debug_status(debug, cache_event, reviews)
         if any(item.status == "エラー" for item in debug.page_statuses):
-            st.error("Notionデータを読み込めませんでした。Debug / Statusのerror列を確認してください。")
+            st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
         else:
-            st.warning("Notionからレビューが取得できませんでした。Debug / Statusでページ状態とraw markdownを確認してください。")
+            st.warning("Notionからレビューが取得できませんでした。Notionページ本文と取得設定を確認してください。")
         return
 
     period_type = st.segmented_control(
@@ -83,8 +80,6 @@ def main() -> None:
         with st.spinner("Generating monthly summary..."):
             monthly_summary = cached_monthly_summary(summary, period_reviews)
         summary.llm_summary = monthly_summary.text
-
-    render_debug_status(debug, cache_event, reviews)
 
     render_metrics(summary)
 
@@ -112,9 +107,20 @@ def main() -> None:
         )
 
     st.subheader("Phrase Cards")
-    phrase_df = phrases_to_dataframe(phrase_cards_for_reviews(period_reviews))
+    phrase_cards = phrase_cards_for_reviews(period_reviews)
+    priorities = available_priorities(phrase_cards)
+    selected_priorities = st.multiselect(
+        "Priority",
+        options=priorities,
+        default=default_priorities(priorities),
+    )
+    filtered_phrase_cards = filter_phrase_cards_by_priority(phrase_cards, selected_priorities)
+    phrase_df = phrases_to_dataframe(filtered_phrase_cards).drop(columns=["next_review_date"], errors="ignore")
     if phrase_df.empty:
-        st.caption("この期間のフレーズカードはありません。")
+        if phrase_cards:
+            st.caption("選択したpriorityに一致するフレーズカードはありません。")
+        else:
+            st.caption("この期間のフレーズカードはありません。")
     else:
         st.dataframe(phrase_df, width="stretch", hide_index=True)
 
@@ -181,67 +187,22 @@ def resolve_cache_event(loaded_at: str, refresh: bool) -> str:
     return event
 
 
-def render_debug_status(debug, cache_event: str, reviews: list) -> None:
-    with st.expander("Debug / Status", expanded=True):
-        cols = st.columns(2)
-        cols[0].metric("Refresh", str(debug.refresh_requested))
-        cols[1].metric("Cache", cache_event)
+def available_priorities(cards: list) -> list[str]:
+    priority_order = ["High", "Medium", "Low"]
+    existing = {card.priority.strip() for card in cards if card.priority.strip()}
+    ordered = [priority for priority in priority_order if priority in existing]
+    extra = sorted(existing - set(priority_order))
+    return ordered + extra
 
-        st.caption(f"Loaded at: {debug.loaded_at}")
 
-        st.markdown("#### Page Load Status")
-        if debug.page_statuses:
-            st.dataframe(
-                [
-                    {
-                        "page_id": item.page_id,
-                        "title": item.title,
-                        "status": item.status,
-                        "review_count": item.review_count,
-                        "last_edited_time": item.last_edited_time or "",
-                        "raw_markdown_path": item.raw_markdown_path,
-                        "error": item.error,
-                        "parser_warnings": "\n".join(item.parser_warnings),
-                    }
-                    for item in debug.page_statuses
-                ],
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.caption("ページ読み込み情報はありません。")
+def default_priorities(priorities: list[str]) -> list[str]:
+    defaults = [priority for priority in ["High", "Medium"] if priority in priorities]
+    return defaults or priorities
 
-        st.markdown("#### Parser Result")
-        st.dataframe(
-            [
-                {
-                    "review_id": review.review_id,
-                    "source_page_title": review.source_page_title,
-                    "date": review.date.isoformat(),
-                    "duration_minutes": review.duration_minutes,
-                    "topic": review.topic,
-                    "phrase_cards": len(review.phrase_cards),
-                }
-                for review in sorted(reviews, key=lambda item: item.date, reverse=True)
-            ],
-            width="stretch",
-            hide_index=True,
-        )
 
-        st.markdown("#### Raw Markdown By Page")
-        for item in debug.page_statuses:
-            if not item.raw_markdown_path:
-                continue
-            raw_path = Path(item.raw_markdown_path)
-            label = f"{item.title or item.page_id} ({item.status})"
-            with st.expander(label):
-                if item.parser_warnings:
-                    st.warning("\n".join(item.parser_warnings))
-                if raw_path.exists():
-                    st.caption(str(raw_path))
-                    st.code(raw_path.read_text(encoding="utf-8"), language="markdown")
-                else:
-                    st.warning(f"Raw markdown file not found: {raw_path}")
+def filter_phrase_cards_by_priority(cards: list, priorities: list[str]) -> list:
+    selected = set(priorities)
+    return [card for card in cards if card.priority in selected]
 
 
 def render_metrics(summary) -> None:
