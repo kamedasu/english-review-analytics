@@ -20,9 +20,9 @@ class MonthlySummaryResult:
     warning: str = ""
 
 
-def generate_rule_based_summary(summary: StudySummary, reviews: list[Review]) -> str:
+def generate_rule_based_summary(summary: StudySummary, reviews: list[Review], period_type: str = "Monthly") -> str:
     if not reviews:
-        return "この月のレビューはまだありません。"
+        return "この期間のレビューはまだありません。"
 
     topics = [review.topic for review in reviews if review.topic]
     frequent_priorities = [
@@ -35,19 +35,24 @@ def generate_rule_based_summary(summary: StudySummary, reviews: list[Review]) ->
     if frequent_priorities:
         priority_note = f" 優先度つきフレーズは {len(frequent_priorities)} 件あります。"
 
+    period_label = _period_label_ja(period_type)
     return (
-        f"{summary.month} は {summary.study_days} 日学習し、合計 "
+        f"{summary.month} の{period_label}では {summary.study_days} 日学習し、合計 "
         f"{summary.total_duration_minutes} 分取り組みました。"
-        f"レビューは {summary.review_count} 件、新規フレーズは {summary.phrase_count} 件です。"
+        f"レビューは {summary.review_count} 件、フレーズは {summary.phrase_count} 件です。"
         f"最長連続学習日数は {summary.longest_streak} 日でした。"
         f"{priority_note}"
         f" 最近の主なトピック: {', '.join(topics[:5]) if topics else '未入力'}。"
     )
 
 
-def generate_monthly_summary(summary: StudySummary, reviews: list[Review]) -> MonthlySummaryResult:
+def generate_period_summary(
+    summary: StudySummary,
+    reviews: list[Review],
+    period_type: str = "Monthly",
+) -> MonthlySummaryResult:
     settings = get_settings()
-    fallback_text = generate_rule_based_summary(summary, reviews)
+    fallback_text = generate_rule_based_summary(summary, reviews, period_type)
 
     if not settings.openai_api_key:
         return MonthlySummaryResult(
@@ -62,6 +67,7 @@ def generate_monthly_summary(summary: StudySummary, reviews: list[Review]) -> Mo
             model=settings.openai_model,
             summary=summary,
             reviews=reviews,
+            period_type=period_type,
         )
     except (requests.RequestException, ValueError, KeyError) as exc:
         return MonthlySummaryResult(
@@ -74,8 +80,12 @@ def generate_monthly_summary(summary: StudySummary, reviews: list[Review]) -> Mo
     return MonthlySummaryResult(text=text, source="llm", model=settings.openai_model)
 
 
+def generate_monthly_summary(summary: StudySummary, reviews: list[Review]) -> MonthlySummaryResult:
+    return generate_period_summary(summary, reviews, "Monthly")
+
+
 def generate_llm_summary_placeholder(summary: StudySummary, reviews: list[Review]) -> str:
-    return generate_monthly_summary(summary, reviews).text
+    return generate_period_summary(summary, reviews).text
 
 
 def _generate_openai_summary(
@@ -83,6 +93,7 @@ def _generate_openai_summary(
     model: str,
     summary: StudySummary,
     reviews: list[Review],
+    period_type: str,
 ) -> str:
     response = requests.post(
         OPENAI_RESPONSES_URL,
@@ -92,8 +103,8 @@ def _generate_openai_summary(
         },
         json={
             "model": model,
-            "instructions": _summary_instructions(),
-            "input": _build_summary_prompt(summary, reviews),
+            "instructions": _summary_instructions(period_type),
+            "input": _build_summary_prompt(summary, reviews, period_type),
             "max_output_tokens": 900,
         },
         timeout=60,
@@ -108,17 +119,18 @@ def _generate_openai_summary(
     return text.strip()
 
 
-def _summary_instructions() -> str:
+def _summary_instructions(period_type: str) -> str:
     return (
         "あなたは英会話学習のコーチです。"
-        "学習レビューの構造化データを読み、日本語で具体的かつ短めに月次サマリーを書いてください。"
+        f"学習レビューの構造化データを読み、日本語で具体的かつ短めに{_period_label_ja(period_type)}サマリーを書いてください。"
         "断定しすぎず、データから読み取れる範囲で提案してください。"
     )
 
 
-def _build_summary_prompt(summary: StudySummary, reviews: list[Review]) -> str:
+def _build_summary_prompt(summary: StudySummary, reviews: list[Review], period_type: str) -> str:
     payload = {
-        "month": summary.month,
+        "period_type": period_type,
+        "period": summary.month,
         "metrics": {
             "total_duration_minutes": summary.total_duration_minutes,
             "study_days": summary.study_days,
@@ -130,16 +142,32 @@ def _build_summary_prompt(summary: StudySummary, reviews: list[Review]) -> str:
         "reviews": [_review_for_prompt(review) for review in sorted(reviews, key=lambda item: item.date)],
     }
     return (
-        "以下の英会話レビュー分析データから、月次サマリーを作成してください。\n"
+        f"以下の英会話レビュー分析データから、{_period_label_ja(period_type)}サマリーを作成してください。\n"
         "必ず次の見出しを含めてください。\n"
-        "## 今月の成長ポイント\n"
-        "## 今月の弱点\n"
+        f"## {_period_prefix_ja(period_type)}の成長ポイント\n"
+        f"## {_period_prefix_ja(period_type)}の弱点\n"
         "## 次に増やすべき表現\n"
         "## 次回以降の学習テーマ\n\n"
         "各見出しは2から4個の箇条書きにしてください。\n"
         "抽象論だけでなく、topicやphraseから分かる具体例を入れてください。\n\n"
         f"データ:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def _period_label_ja(period_type: str) -> str:
+    return {
+        "Monthly": "月次",
+        "Quarterly": "四半期",
+        "Yearly": "年次",
+    }.get(period_type, "期間")
+
+
+def _period_prefix_ja(period_type: str) -> str:
+    return {
+        "Monthly": "今月",
+        "Quarterly": "この四半期",
+        "Yearly": "今年",
+    }.get(period_type, "この期間")
 
 
 def _review_for_prompt(review: Review) -> dict:

@@ -5,7 +5,7 @@ from collections import defaultdict
 import pandas as pd
 
 from src.models import PhraseCard, Review, StudySummary
-from src.reuse_detector import detect_reused_phrases
+from src.reuse_detector import detect_reused_phrases, normalize_phrase
 from src.streak import longest_streak
 from src.utils.dates import month_key
 
@@ -109,6 +109,53 @@ def phrases_to_dataframe(cards: list[PhraseCard]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def dedupe_phrases_to_dataframe(cards: list[PhraseCard]) -> pd.DataFrame:
+    grouped: dict[str, dict] = {}
+    for card in cards:
+        key = normalize_phrase(card.phrase)
+        if not key:
+            continue
+        seen_date = card.source_review_date
+        if key not in grouped:
+            grouped[key] = {
+                "phrase": card.phrase,
+                "first_seen_date": seen_date,
+                "last_seen_date": seen_date,
+                "occurrence_count": 0,
+                "highest_priority": card.priority,
+                "meanings": set(),
+                "examples": set(),
+            }
+        item = grouped[key]
+        item["occurrence_count"] += 1
+        item["highest_priority"] = _higher_priority(item["highest_priority"], card.priority)
+        if seen_date and (item["first_seen_date"] is None or seen_date < item["first_seen_date"]):
+            item["first_seen_date"] = seen_date
+        if seen_date and (item["last_seen_date"] is None or seen_date > item["last_seen_date"]):
+            item["last_seen_date"] = seen_date
+        if card.meaning:
+            item["meanings"].add(card.meaning)
+        if card.example:
+            item["examples"].add(card.example)
+
+    rows = []
+    for item in grouped.values():
+        rows.append(
+            {
+                "phrase": item["phrase"],
+                "first_seen_date": item["first_seen_date"].isoformat() if item["first_seen_date"] else "",
+                "last_seen_date": item["last_seen_date"].isoformat() if item["last_seen_date"] else "",
+                "occurrence_count": item["occurrence_count"],
+                "highest_priority": item["highest_priority"],
+                "meanings": "\n".join(sorted(item["meanings"])),
+                "examples": "\n".join(sorted(item["examples"])),
+            }
+        )
+    return pd.DataFrame(
+        sorted(rows, key=lambda row: (row["occurrence_count"], row["last_seen_date"], row["phrase"]), reverse=True)
+    )
+
+
 def duration_by_day(reviews: list[Review]) -> pd.DataFrame:
     grouped: dict[str, int] = defaultdict(int)
     for review in reviews:
@@ -116,3 +163,10 @@ def duration_by_day(reviews: list[Review]) -> pd.DataFrame:
     return pd.DataFrame(
         [{"date": date, "duration_minutes": minutes} for date, minutes in sorted(grouped.items())]
     )
+
+
+def _higher_priority(current: str, candidate: str) -> str:
+    priority_rank = {"High": 3, "Medium": 2, "Low": 1}
+    current_rank = priority_rank.get(current, 0)
+    candidate_rank = priority_rank.get(candidate, 0)
+    return candidate if candidate_rank > current_rank else current
