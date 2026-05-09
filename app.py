@@ -19,7 +19,7 @@ from src.analytics import (
 )
 from src.data_loader import load_or_fetch_reviews
 from src.llm_summary import generate_monthly_summary
-from src.reuse_detector import detect_reused_phrases
+from src.reuse_detector import detect_reused_phrases, summarize_reused_phrases
 
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
@@ -90,21 +90,7 @@ def main() -> None:
 
     render_period_summary(period_type, summary, monthly_summary)
 
-    reused = detect_reused_phrases(period_reviews)
-    if reused:
-        st.subheader("Reused Phrase Candidates")
-        st.dataframe(
-            [
-                {
-                    "phrase": item.phrase,
-                    "reused_on": item.reused_on,
-                    "matched_field": item.matched_field,
-                }
-                for item in reused
-            ],
-            width="stretch",
-            hide_index=True,
-        )
+    render_reused_phrase_candidates(period_reviews)
 
     st.subheader("Phrase Cards")
     phrase_cards = phrase_cards_for_reviews(period_reviews)
@@ -168,6 +154,48 @@ def render_period_summary(period_type: str, summary, monthly_summary) -> None:
             f"合計 {summary.total_duration_minutes} 分取り組みました。"
             f"レビューは {summary.review_count} 件、フレーズは {summary.phrase_count} 件、"
             f"再利用候補は {summary.reused_phrase_count} 件です。"
+        )
+
+
+def render_reused_phrase_candidates(reviews: list) -> None:
+    st.subheader("Reused Phrase Candidates")
+    reused_summary = summarize_reused_phrases(reviews)
+    if not reused_summary:
+        st.caption("この期間の再利用候補はまだありません。")
+        return
+
+    st.dataframe(
+        [
+            {
+                "phrase": item.phrase,
+                "first_seen_date": item.first_seen_date,
+                "reused_dates": ", ".join(item.reused_dates),
+                "reuse_count": item.reuse_count,
+                "matched_fields": ", ".join(item.matched_fields),
+                "last_used_date": item.last_used_date,
+                "retention_label": item.retention_label,
+            }
+            for item in reused_summary
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    raw_reuse = detect_reused_phrases(reviews)
+    with st.expander("Raw Reused Phrase Matches"):
+        st.dataframe(
+            [
+                {
+                    "phrase": item.phrase,
+                    "reused_on": item.reused_on,
+                    "matched_field": item.matched_field,
+                    "first_review_id": item.first_review_id,
+                    "reused_review_id": item.reused_review_id,
+                }
+                for item in raw_reuse
+            ],
+            width="stretch",
+            hide_index=True,
         )
 
 
