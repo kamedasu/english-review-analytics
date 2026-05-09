@@ -98,6 +98,25 @@ streamlit run app.py
 
 サイドバーの `Refresh from Notion` を押すと、キャッシュをクリアしてNotionから再取得します。
 
+## 集計単位の切り替え
+
+画面上部の `Aggregation` で集計単位を切り替えられます。
+
+- `Monthly`: 月単位で集計し、月次LLMサマリーを表示します
+- `Quarterly`: 四半期単位で集計します。例: `2026-Q2`
+- `Yearly`: 年単位で集計します。例: `2026`
+
+どの集計単位でも、以下の指標を表示します。
+
+- 総勉強時間
+- 学習日数
+- 最長連続学習日数
+- review数
+- phrase数
+- reused phrase数
+
+LLMサマリーは現在 `Monthly` のみ対応しています。`Quarterly` / `Yearly` は同じ集計データを使って後からLLM化しやすい構成にしています。
+
 ## Notion本文の前提
 
 月別ページ本文に、以下のようなMarkdown相当の構造が複数件並んでいる前提です。
@@ -162,11 +181,12 @@ Parser結果は `Debug / Status` の `Parser Result` に一覧表示されます
 
 ## 現在できること
 
-- 月選択
+- Monthly / Quarterly / Yearly の集計切り替え
 - 総勉強時間
 - 学習日数
 - 最長連続学習日数
 - 新規フレーズ数
+- reused phrase数
 - レビュー一覧
 - フレーズ一覧
 - ルールベースの月次サマリー

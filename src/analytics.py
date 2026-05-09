@@ -14,23 +14,59 @@ def available_months(reviews: list[Review]) -> list[str]:
     return sorted({month_key(review.date) for review in reviews}, reverse=True)
 
 
+def available_quarters(reviews: list[Review]) -> list[str]:
+    return sorted({quarter_key(review) for review in reviews}, reverse=True)
+
+
+def available_years(reviews: list[Review]) -> list[str]:
+    return sorted({year_key(review) for review in reviews}, reverse=True)
+
+
 def filter_reviews_by_month(reviews: list[Review], month: str) -> list[Review]:
     return [review for review in reviews if month_key(review.date) == month]
 
 
+def filter_reviews_by_quarter(reviews: list[Review], quarter: str) -> list[Review]:
+    return [review for review in reviews if quarter_key(review) == quarter]
+
+
+def filter_reviews_by_year(reviews: list[Review], year: str) -> list[Review]:
+    return [review for review in reviews if year_key(review) == year]
+
+
 def summarize_month(reviews: list[Review], month: str) -> StudySummary:
-    monthly_reviews = filter_reviews_by_month(reviews, month)
-    reused = detect_reused_phrases(monthly_reviews)
-    phrase_count = sum(len(review.phrase_cards) for review in monthly_reviews)
+    return summarize_reviews(filter_reviews_by_month(reviews, month), month)
+
+
+def summarize_quarter(reviews: list[Review], quarter: str) -> StudySummary:
+    return summarize_reviews(filter_reviews_by_quarter(reviews, quarter), quarter)
+
+
+def summarize_year(reviews: list[Review], year: str) -> StudySummary:
+    return summarize_reviews(filter_reviews_by_year(reviews, year), year)
+
+
+def summarize_reviews(period_reviews: list[Review], period_label: str) -> StudySummary:
+    reused = detect_reused_phrases(period_reviews)
+    phrase_count = sum(len(review.phrase_cards) for review in period_reviews)
     return StudySummary(
-        month=month,
-        total_duration_minutes=sum(review.duration_minutes for review in monthly_reviews),
-        study_days=len({review.date for review in monthly_reviews}),
-        longest_streak=longest_streak([review.date for review in monthly_reviews]),
-        review_count=len(monthly_reviews),
+        month=period_label,
+        total_duration_minutes=sum(review.duration_minutes for review in period_reviews),
+        study_days=len({review.date for review in period_reviews}),
+        longest_streak=longest_streak([review.date for review in period_reviews]),
+        review_count=len(period_reviews),
         phrase_count=phrase_count,
         reused_phrase_count=len(reused),
     )
+
+
+def quarter_key(review: Review) -> str:
+    quarter = ((review.date.month - 1) // 3) + 1
+    return f"{review.date.year}-Q{quarter}"
+
+
+def year_key(review: Review) -> str:
+    return str(review.date.year)
 
 
 def phrase_cards_for_reviews(reviews: list[Review]) -> list[PhraseCard]:
