@@ -4,7 +4,7 @@ from collections import defaultdict
 
 import pandas as pd
 
-from src.models import PhraseCard, Review, StudySummary
+from src.models import MoreNaturalExpression, PhraseCard, Review, StudySummary
 from src.reuse_detector import detect_reused_phrases, normalize_phrase
 from src.streak import longest_streak
 from src.utils.dates import month_key
@@ -85,12 +85,60 @@ def reviews_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
             "good_points": "\n".join(review.good_points),
             "expressions_to_add": "\n".join(review.expressions_to_add),
             "expressions_to_use_next_time": "\n".join(review.expressions_to_use_next_time),
+            "weak_points": "\n".join(getattr(review, "weak_points", []) or []),
+            "more_natural_count": len(getattr(review, "more_natural_expressions", []) or []),
             "comment": review.comment,
             "phrase_count": len(review.phrase_cards),
             "source_page_title": review.source_page_title,
         }
         for review in sorted(reviews, key=lambda item: item.date, reverse=True)
     ]
+    return pd.DataFrame(rows)
+
+
+def weak_points_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
+    grouped: dict[str, dict] = {}
+    for review in reviews:
+        for weak_point in getattr(review, "weak_points", []) or []:
+            text = (weak_point or "").strip()
+            if not text:
+                continue
+            key = normalize_phrase(text)
+            if key not in grouped:
+                grouped[key] = {
+                    "weak_point": text,
+                    "dates": set(),
+                    "occurrence_count": 0,
+                }
+            grouped[key]["dates"].add(review.date.isoformat())
+            grouped[key]["occurrence_count"] += 1
+
+    rows = [
+        {
+            "weak_point": item["weak_point"],
+            "dates": ", ".join(sorted(item["dates"])),
+            "occurrence_count": item["occurrence_count"],
+        }
+        for item in grouped.values()
+    ]
+    return pd.DataFrame(
+        sorted(rows, key=lambda row: (row["occurrence_count"], row["dates"], row["weak_point"]), reverse=True)
+    )
+
+
+def more_natural_expressions_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
+    rows = []
+    for review in sorted(reviews, key=lambda item: item.date, reverse=True):
+        expressions: list[MoreNaturalExpression] = getattr(review, "more_natural_expressions", []) or []
+        for expression in expressions:
+            rows.append(
+                {
+                    "Your phrase": expression.your_phrase,
+                    "More natural": expression.more_natural,
+                    "Note": expression.note,
+                    "Date": review.date.isoformat(),
+                }
+            )
     return pd.DataFrame(rows)
 
 

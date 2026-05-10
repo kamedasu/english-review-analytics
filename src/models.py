@@ -15,6 +15,14 @@ class PhraseCard(BaseModel):
     source_review_date: date | None = None
 
 
+class MoreNaturalExpression(BaseModel):
+    your_phrase: str = ""
+    more_natural: str = ""
+    note: str = ""
+    source_review_id: str = ""
+    source_review_date: date | None = None
+
+
 class Review(BaseModel):
     review_id: str
     source_page_id: str = ""
@@ -25,6 +33,8 @@ class Review(BaseModel):
     good_points: list[str] = Field(default_factory=list)
     expressions_to_add: list[str] = Field(default_factory=list)
     expressions_to_use_next_time: list[str] = Field(default_factory=list)
+    weak_points: list[str] = Field(default_factory=list)
+    more_natural_expressions: list[MoreNaturalExpression] = Field(default_factory=list)
     comment: str = ""
     phrase_cards: list[PhraseCard] = Field(default_factory=list)
     raw_markdown: str = ""

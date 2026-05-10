@@ -178,6 +178,15 @@ def _review_for_prompt(review: Review) -> dict:
         "good_points": review.good_points,
         "expressions_to_add": review.expressions_to_add,
         "expressions_to_use_next_time": review.expressions_to_use_next_time,
+        "weak_points": getattr(review, "weak_points", []) or [],
+        "more_natural_expressions": [
+            {
+                "your_phrase": expression.your_phrase,
+                "more_natural": expression.more_natural,
+                "note": expression.note,
+            }
+            for expression in (getattr(review, "more_natural_expressions", []) or [])
+        ],
         "comment": review.comment,
         "phrase_cards": [
             {

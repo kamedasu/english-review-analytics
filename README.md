@@ -117,6 +117,35 @@ streamlit run app.py
 
 LLMサマリーは `Monthly` / `Quarterly` / `Yearly` に対応しています。`OPENAI_API_KEY` が未設定の場合は、どの集計単位でもrule-based summaryにフォールバックします。
 
+## 画面構成
+
+通常UIは実運用向けに、以下の順で表示します。
+
+1. Aggregation切り替え
+2. KPIカード
+3. Summary
+4. Improvement Focus
+5. Reused Phrase Candidates
+6. Phrase Cards
+7. Reviews
+
+raw review本文やraw match結果は通常UIには表示しません。詳細を確認したい場合はNotion側のレビュー本文を確認します。
+
+## Improvement Focus
+
+新しいレビュー構造では `Weak points` と `More natural expressions` を扱えます。
+
+`Weak Points` では、期間内レビューの弱点を重複に近い内容ごとにまとめて表示します。
+
+`More Natural Expressions` では、以下を表形式で表示します。
+
+- `Your phrase`
+- `More natural`
+- `Note`
+- `Date`
+
+古いレビューには `Weak points` や `More natural expressions` が存在しない場合があります。これは正常な状態として扱い、該当項目がない期間では「まだ記録はありません」というメッセージを表示します。
+
 ## Phrase Cards
 
 `Phrase Cards` ではpriorityで表示対象を絞り込めます。現在は `High` / `Medium` を初期選択にしています。

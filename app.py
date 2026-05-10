@@ -7,16 +7,17 @@ from src.analytics import (
     available_quarters,
     available_years,
     dedupe_phrases_to_dataframe,
-    duration_by_day,
     filter_reviews_by_month,
     filter_reviews_by_quarter,
     filter_reviews_by_year,
+    more_natural_expressions_to_dataframe,
     phrase_cards_for_reviews,
     phrases_to_dataframe,
     reviews_to_dataframe,
     summarize_month,
     summarize_quarter,
     summarize_year,
+    weak_points_to_dataframe,
 )
 from src.data_loader import load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
@@ -51,7 +52,7 @@ def main() -> None:
 
     reviews = load_result.reviews
     debug = load_result.debug
-    cache_event = resolve_cache_event(debug.loaded_at, refresh)
+    resolve_cache_event(debug.loaded_at, refresh)
 
     for message in debug.messages:
         st.sidebar.caption(message)
@@ -82,12 +83,9 @@ def main() -> None:
 
     render_metrics(summary)
 
-    daily_duration = duration_by_day(period_reviews)
-    if not daily_duration.empty:
-        st.subheader("Study Time")
-        st.bar_chart(daily_duration, x="date", y="duration_minutes")
-
     render_period_summary(period_type, summary, period_summary)
+
+    render_improvement_focus(period_reviews)
 
     render_reused_phrase_candidates(period_reviews)
 
@@ -125,6 +123,24 @@ def render_period_summary(period_type: str, summary, period_summary) -> None:
     st.write(summary.llm_summary)
 
 
+def render_improvement_focus(reviews: list) -> None:
+    st.subheader("Improvement Focus")
+
+    st.markdown("#### Weak Points")
+    weak_points_df = weak_points_to_dataframe(reviews)
+    if weak_points_df.empty:
+        st.caption("この期間には weak points の記録はまだありません。")
+    else:
+        st.dataframe(weak_points_df, width="stretch", hide_index=True)
+
+    st.markdown("#### More Natural Expressions")
+    more_natural_df = more_natural_expressions_to_dataframe(reviews)
+    if more_natural_df.empty:
+        st.caption("この期間には more natural expressions の記録はまだありません。")
+    else:
+        st.dataframe(more_natural_df, width="stretch", hide_index=True)
+
+
 def render_reused_phrase_candidates(reviews: list) -> None:
     st.subheader("Reused Phrase Candidates")
     reused_summary = summarize_reused_phrases(reviews)
@@ -148,6 +164,7 @@ def render_reused_phrase_candidates(reviews: list) -> None:
         width="stretch",
         hide_index=True,
     )
+
 
 def render_phrase_cards(reviews: list) -> None:
     st.subheader("Phrase Cards")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from src.models import PhraseCard, Review
+from src.models import MoreNaturalExpression, PhraseCard, Review
 from src.utils.dates import parse_date
 from src.utils.hashing import content_hash
 
@@ -59,18 +59,27 @@ def parse_review(
     review_id = f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
 
     phrase_cards = _parse_phrase_cards(markdown, review_id, review_date)
+    more_natural_expressions = _parse_more_natural_expressions_from_markdown(markdown, review_id, review_date)
+    if not more_natural_expressions:
+        more_natural_expressions = _parse_more_natural_expressions(
+            _get_first_field(fields, ["More natural expressions", "More natural expression"]),
+            review_id,
+            review_date,
+        )
 
     return Review(
         review_id=review_id,
         source_page_id=source_page_id,
         source_page_title=source_page_title,
         date=review_date,
-        duration_minutes=_safe_int(fields.get("Duration", "")),
-        topic=_normalize_text_field(fields.get("Topic", "")),
-        good_points=_normalize_list_field(fields.get("Good points", [])),
-        expressions_to_add=_normalize_list_field(fields.get("Expressions to add", [])),
-        expressions_to_use_next_time=_normalize_list_field(fields.get("Expressions to use next time", [])),
-        comment=_normalize_comment(fields.get("Comment", ""), review_id, warnings),
+        duration_minutes=_safe_int(_get_field(fields, "Duration")),
+        topic=_normalize_text_field(_get_field(fields, "Topic")),
+        good_points=_normalize_list_field(_get_field(fields, "Good points")),
+        expressions_to_add=_normalize_list_field(_get_field(fields, "Expressions to add")),
+        expressions_to_use_next_time=_normalize_list_field(_get_field(fields, "Expressions to use next time")),
+        weak_points=_normalize_list_field(_get_first_field(fields, ["Weak points", "Weak point"])),
+        more_natural_expressions=more_natural_expressions,
+        comment=_normalize_comment(_get_field(fields, "Comment"), review_id, warnings),
         phrase_cards=phrase_cards,
         raw_markdown=markdown,
         content_hash=review_hash,
@@ -120,6 +129,24 @@ def _parse_review_fields(markdown: str) -> dict[str, FieldValue]:
     return fields
 
 
+def _get_field(fields: dict[str, FieldValue], name: str) -> FieldValue:
+    if name in fields:
+        return fields[name]
+    target = name.lower().strip()
+    for key, value in fields.items():
+        if key.lower().strip() == target:
+            return value
+    return []
+
+
+def _get_first_field(fields: dict[str, FieldValue], names: list[str]) -> FieldValue:
+    for name in names:
+        value = _get_field(fields, name)
+        if value:
+            return value
+    return []
+
+
 def _parse_phrase_cards(markdown: str, review_id: str, review_date: date) -> list[PhraseCard]:
     if "## Phrase Cards" not in markdown:
         return []
@@ -156,6 +183,132 @@ def _parse_card_fields(markdown: str) -> dict[str, str]:
         if match:
             fields[match.group(1).strip()] = match.group(2).strip()
     return fields
+
+
+def _parse_more_natural_expressions(
+    value: FieldValue,
+    review_id: str,
+    review_date: date,
+) -> list[MoreNaturalExpression]:
+    items = _normalize_list_field(value)
+    if not items:
+        return []
+
+    records: list[MoreNaturalExpression] = []
+    current: dict[str, str] = {}
+
+    for item in items:
+        key, field_value = _split_key_value(item)
+        normalized_key = _normalize_more_natural_key(key)
+        if normalized_key:
+            if normalized_key == "your_phrase" and current:
+                records.append(_more_natural_from_fields(current, review_id, review_date))
+                current = {}
+            current[normalized_key] = field_value
+            continue
+
+        if current:
+            current["note"] = " ".join(part for part in [current.get("note", ""), item] if part).strip()
+        else:
+            current["your_phrase"] = item
+
+    if current:
+        records.append(_more_natural_from_fields(current, review_id, review_date))
+
+    return [
+        record
+        for record in records
+        if record.your_phrase or record.more_natural or record.note
+    ]
+
+
+def _parse_more_natural_expressions_from_markdown(
+    markdown: str,
+    review_id: str,
+    review_date: date,
+) -> list[MoreNaturalExpression]:
+    section_match = re.search(
+        r"(?ms)^-\s*More natural expressions:\s*\n(?P<body>.*?)(?=^-\s*[A-Z][^:\n]+:\s*|^##\s+|\Z)",
+        markdown,
+    )
+    if not section_match:
+        return []
+
+    body = section_match.group("body").strip()
+    if not body:
+        return []
+
+    records: list[MoreNaturalExpression] = []
+    chunks = re.split(r"(?m)^\s*-\s*Your phrase:\s*", body)
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        fields = _parse_more_natural_chunk(f"Your phrase:\n{chunk}")
+        records.append(_more_natural_from_fields(fields, review_id, review_date))
+
+    return [
+        record
+        for record in records
+        if record.your_phrase or record.more_natural or record.note
+    ]
+
+
+def _parse_more_natural_chunk(chunk: str) -> dict[str, str]:
+    fields: dict[str, list[str]] = {
+        "your_phrase": [],
+        "more_natural": [],
+        "note": [],
+    }
+    current_key = ""
+
+    for raw_line in chunk.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        key, value = _split_key_value(line.lstrip("-").strip())
+        normalized_key = _normalize_more_natural_key(key)
+        if normalized_key:
+            current_key = normalized_key
+            if value:
+                fields[current_key].append(value)
+            continue
+        if current_key:
+            fields[current_key].append(line)
+
+    return {key: " ".join(value).strip() for key, value in fields.items()}
+
+
+def _more_natural_from_fields(
+    fields: dict[str, str],
+    review_id: str,
+    review_date: date,
+) -> MoreNaturalExpression:
+    return MoreNaturalExpression(
+        your_phrase=fields.get("your_phrase", ""),
+        more_natural=fields.get("more_natural", ""),
+        note=fields.get("note", ""),
+        source_review_id=review_id,
+        source_review_date=review_date,
+    )
+
+
+def _split_key_value(value: str) -> tuple[str, str]:
+    match = re.match(r"^([^:：]+)[:：]\s*(.*)$", value.strip())
+    if not match:
+        return "", value.strip()
+    return match.group(1).strip(), match.group(2).strip()
+
+
+def _normalize_more_natural_key(key: str) -> str:
+    normalized = key.lower().strip().replace("-", " ").replace("_", " ")
+    if normalized in {"your phrase", "original", "before"}:
+        return "your_phrase"
+    if normalized in {"more natural", "natural", "better", "after"}:
+        return "more_natural"
+    if normalized in {"note", "notes", "reason", "comment"}:
+        return "note"
+    return ""
 
 
 def _normalize_comment(value: FieldValue, review_id: str, warnings: list[str] | None = None) -> str:
