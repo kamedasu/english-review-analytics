@@ -60,5 +60,15 @@ class PageState(BaseModel):
     last_fetched_at: datetime | None = None
 
 
+class ReviewState(BaseModel):
+    review_id: str
+    source_page_id: str
+    source_page_title: str = ""
+    date: date
+    content_hash: str
+    updated_at: datetime | None = None
+
+
 class FetchState(BaseModel):
     pages: dict[str, PageState] = Field(default_factory=dict)
+    reviews: dict[str, ReviewState] = Field(default_factory=dict)

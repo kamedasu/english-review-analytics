@@ -42,20 +42,23 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data")
-        refresh = st.button("Refresh from Notion", type="primary")
-        if refresh:
+        st.caption("通常表示はローカル保存済みデータのみを使います。")
+        sync = st.button("Sync from Notion", type="primary")
+        if sync:
             cached_load_reviews.clear()
             st.session_state["cache_cleared"] = True
 
-    with st.spinner("Loading reviews..."):
-        load_result = cached_load_reviews(refresh)
+    with st.spinner("Syncing active month from Notion..." if sync else "Loading local reviews..."):
+        load_result = load_or_fetch_reviews(refresh=True) if sync else cached_load_reviews(False)
 
     reviews = load_result.reviews
     debug = load_result.debug
-    resolve_cache_event(debug.loaded_at, refresh)
+    resolve_cache_event(debug.loaded_at, sync)
 
     for message in debug.messages:
         st.sidebar.caption(message)
+    if debug.sync_requested:
+        render_sync_result(debug)
 
     if any(item.status == "エラー" for item in debug.page_statuses):
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
@@ -64,7 +67,7 @@ def main() -> None:
         if any(item.status == "エラー" for item in debug.page_statuses):
             st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
         else:
-            st.warning("Notionからレビューが取得できませんでした。Notionページ本文と取得設定を確認してください。")
+            st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
         return
 
     period_type = st.segmented_control(
@@ -110,6 +113,24 @@ def select_period(reviews: list, period_type: str):
     periods = available_years(reviews)
     selected = st.selectbox("Year", periods, index=0)
     return selected, filter_reviews_by_year(reviews, selected), summarize_year(reviews, selected)
+
+
+def render_sync_result(debug) -> None:
+    st.info("Sync from Notion completed. 通常表示はローカル保存済みデータを使います。")
+    rows = [
+        {
+            "month": item.synced_month,
+            "page_title": item.title,
+            "status": item.status,
+            "added": item.added_count,
+            "updated": item.updated_count,
+            "skipped": item.skipped_count,
+            "error": item.error,
+        }
+        for item in debug.page_statuses
+    ]
+    if rows:
+        st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def render_period_summary(period_type: str, summary, period_summary) -> None:

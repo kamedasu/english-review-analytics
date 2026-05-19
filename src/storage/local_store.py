@@ -9,16 +9,19 @@ from src.config import DATA_DIR
 from src.models import Review
 
 
-REVIEWS_PATH = DATA_DIR / "processed" / "reviews.json"
+def reviews_path() -> Path:
+    return DATA_DIR / "processed" / "reviews.json"
 
 
-def save_reviews(reviews: list[Review], path: Path = REVIEWS_PATH) -> None:
+def save_reviews(reviews: list[Review], path: Path | None = None) -> None:
+    path = path or reviews_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [review.model_dump(mode="json") for review in reviews]
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_reviews(path: Path = REVIEWS_PATH) -> list[Review]:
+def load_reviews(path: Path | None = None) -> list[Review]:
+    path = path or reviews_path()
     if not path.exists():
         return []
     adapter = TypeAdapter(list[Review])

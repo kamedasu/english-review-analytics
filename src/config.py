@@ -11,13 +11,16 @@ load_dotenv()
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT_DIR / "data"
+DATA_DIR = Path(os.getenv("DATA_ROOT_DIR", "")).expanduser() if os.getenv("DATA_ROOT_DIR") else ROOT_DIR / "data"
 
 
 @dataclass(frozen=True)
 class Settings:
     notion_api_key: str
     notion_page_ids: list[str]
+    notion_active_page_ids: list[str]
+    active_months: list[str]
+    archived_months: list[str]
     openai_api_key: str
     openai_model: str
     storage_mode: str
@@ -31,6 +34,9 @@ def get_settings() -> Settings:
     return Settings(
         notion_api_key=os.getenv("NOTION_API_KEY", ""),
         notion_page_ids=_split_csv(os.getenv("NOTION_PAGE_IDS", "")),
+        notion_active_page_ids=_split_csv(os.getenv("NOTION_ACTIVE_PAGE_IDS", "")),
+        active_months=_split_csv(os.getenv("ACTIVE_MONTHS", "")),
+        archived_months=_split_csv(os.getenv("ARCHIVED_MONTHS", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         storage_mode=os.getenv("STORAGE_MODE", "local"),
