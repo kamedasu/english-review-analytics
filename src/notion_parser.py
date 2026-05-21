@@ -59,6 +59,7 @@ def parse_review(
     review_id = f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
 
     phrase_cards = _parse_phrase_cards(markdown, review_id, review_date)
+    words_and_phrases_actually_used = _parse_words_and_phrases_actually_used(markdown)
     more_natural_expressions = _parse_more_natural_expressions_from_markdown(markdown, review_id, review_date)
     if not more_natural_expressions:
         more_natural_expressions = _parse_more_natural_expressions(
@@ -79,6 +80,7 @@ def parse_review(
         expressions_to_use_next_time=_normalize_list_field(_get_field(fields, "Expressions to use next time")),
         weak_points=_normalize_list_field(_get_first_field(fields, ["Weak points", "Weak point"])),
         more_natural_expressions=more_natural_expressions,
+        words_and_phrases_actually_used=words_and_phrases_actually_used,
         comment=_normalize_comment(_get_field(fields, "Comment"), review_id, warnings),
         phrase_cards=phrase_cards,
         raw_markdown=markdown,
@@ -183,6 +185,26 @@ def _parse_card_fields(markdown: str) -> dict[str, str]:
         if match:
             fields[match.group(1).strip()] = match.group(2).strip()
     return fields
+
+
+def _parse_words_and_phrases_actually_used(markdown: str) -> list[str]:
+    section_match = re.search(
+        r"(?mis)^##\s*Words\s+and\s+phrases\s+actually\s+used\s*$"
+        r"(?P<body>.*?)(?=^##\s+|\Z)",
+        markdown,
+    )
+    if not section_match:
+        return []
+
+    items: list[str] = []
+    for line in section_match.group("body").splitlines():
+        match = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            items.append(value)
+    return items
 
 
 def _parse_more_natural_expressions(

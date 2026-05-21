@@ -23,6 +23,7 @@ class Settings:
     archived_months: list[str]
     openai_api_key: str
     openai_model: str
+    openai_summary_retry_count: int
     storage_mode: str
     s3_bucket: str
     s3_endpoint_url: str
@@ -39,6 +40,7 @@ def get_settings() -> Settings:
         archived_months=_split_csv(os.getenv("ARCHIVED_MONTHS", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        openai_summary_retry_count=_safe_int(os.getenv("OPENAI_SUMMARY_RETRY_COUNT", ""), default=3),
         storage_mode=os.getenv("STORAGE_MODE", "local"),
         s3_bucket=os.getenv("S3_BUCKET", ""),
         s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
@@ -49,3 +51,10 @@ def get_settings() -> Settings:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _safe_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

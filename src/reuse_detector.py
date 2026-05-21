@@ -29,19 +29,21 @@ class PhraseReuseSummary:
 def detect_reused_phrases(reviews: list[Review]) -> list[ReusedPhrase]:
     sorted_reviews = sorted(reviews, key=lambda review: review.date)
     results: list[ReusedPhrase] = []
+    first_seen = _first_seen_by_phrase(sorted_reviews)
 
     for source_index, review in enumerate(sorted_reviews):
-        for card in review.phrase_cards:
-            phrase = normalize_phrase(card.phrase)
-            if not phrase:
+        source_candidates = _source_candidates(review)
+        for phrase, source_field in source_candidates.items():
+            first = first_seen.get(phrase)
+            if not first:
                 continue
             for later_review in sorted_reviews[source_index + 1 :]:
                 match_field = _find_phrase_in_review(phrase, later_review)
                 if match_field:
                     results.append(
                         ReusedPhrase(
-                            phrase=card.phrase,
-                            first_review_id=review.review_id,
+                            phrase=first["phrase"],
+                            first_review_id=first["review_id"],
                             reused_review_id=later_review.review_id,
                             reused_on=later_review.date.isoformat(),
                             matched_field=match_field,
@@ -104,14 +106,34 @@ def normalize_phrase(value: str) -> str:
 def _first_seen_by_phrase(reviews: list[Review]) -> dict[str, dict[str, str]]:
     first_seen: dict[str, dict[str, str]] = {}
     for review in reviews:
-        for card in review.phrase_cards:
-            key = normalize_phrase(card.phrase)
+        for phrase in _source_candidates(review):
+            key = normalize_phrase(phrase)
             if key and key not in first_seen:
                 first_seen[key] = {
-                    "phrase": card.phrase,
+                    "phrase": phrase,
                     "date": review.date.isoformat(),
+                    "review_id": review.review_id,
                 }
     return first_seen
+
+
+def _source_candidates(review: Review) -> dict[str, str]:
+    candidates: dict[str, str] = {}
+    for card in getattr(review, "phrase_cards", []) or []:
+        _add_candidate(candidates, card.phrase, "phrase_card")
+    for phrase in getattr(review, "expressions_to_add", []) or []:
+        _add_candidate(candidates, phrase, "expressions_to_add")
+    for phrase in getattr(review, "expressions_to_use_next_time", []) or []:
+        _add_candidate(candidates, phrase, "expressions_to_use_next_time")
+    for phrase in getattr(review, "words_and_phrases_actually_used", []) or []:
+        _add_candidate(candidates, phrase, "actually_used")
+    return candidates
+
+
+def _add_candidate(candidates: dict[str, str], phrase: str, field_name: str) -> None:
+    key = normalize_phrase(phrase or "")
+    if key and key not in candidates:
+        candidates[key] = field_name
 
 
 def _retention_label(reuse_count: int, matched_fields: list[str]) -> str:
@@ -133,6 +155,7 @@ def _find_phrase_in_review(phrase: str, review: Review) -> str | None:
         "good_points": " ".join(review.good_points),
         "expressions_to_add": " ".join(review.expressions_to_add),
         "expressions_to_use_next_time": " ".join(review.expressions_to_use_next_time),
+        "actually_used": " ".join(getattr(review, "words_and_phrases_actually_used", []) or []),
     }
     for field_name, text in fields.items():
         if phrase in normalize_phrase(text):

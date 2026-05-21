@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 
 import requests
 
@@ -18,6 +19,12 @@ class MonthlySummaryResult:
     source: str
     model: str = ""
     warning: str = ""
+
+
+class RetryableOpenAIError(ValueError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(f"{status_code}: {message}")
+        self.status_code = status_code
 
 
 def generate_rule_based_summary(summary: StudySummary, reviews: list[Review], period_type: str = "Monthly") -> str:
@@ -68,6 +75,18 @@ def generate_period_summary(
             summary=summary,
             reviews=reviews,
             period_type=period_type,
+            retry_count=settings.openai_summary_retry_count,
+        )
+    except RetryableOpenAIError as exc:
+        retry_count = max(settings.openai_summary_retry_count, 0)
+        return MonthlySummaryResult(
+            text=fallback_text,
+            source="rule-based",
+            model=settings.openai_model,
+            warning=(
+                "OpenAI APIの一時的なserver_errorが続いたため、rule-based summaryにfallbackしました "
+                f"(last_status={exc.status_code}, retries={retry_count})。"
+            ),
         )
     except (requests.RequestException, ValueError, KeyError) as exc:
         return MonthlySummaryResult(
@@ -94,21 +113,33 @@ def _generate_openai_summary(
     summary: StudySummary,
     reviews: list[Review],
     period_type: str,
+    retry_count: int,
 ) -> str:
-    response = requests.post(
-        OPENAI_RESPONSES_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "instructions": _summary_instructions(period_type),
-            "input": _build_summary_prompt(summary, reviews, period_type),
-            "max_output_tokens": 900,
-        },
-        timeout=60,
-    )
+    retry_count = max(retry_count, 0)
+    response = None
+    for attempt in range(retry_count + 1):
+        response = requests.post(
+            OPENAI_RESPONSES_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "instructions": _summary_instructions(period_type),
+                "input": _build_summary_prompt(summary, reviews, period_type),
+                "max_output_tokens": 900,
+            },
+            timeout=60,
+        )
+        if response.status_code not in {500, 502, 503, 504}:
+            break
+        if attempt >= retry_count:
+            raise RetryableOpenAIError(response.status_code, response.text[:500])
+        time.sleep(2**attempt)
+
+    if response is None:
+        raise ValueError("OpenAI response was not created.")
     if response.status_code >= 400:
         raise ValueError(f"{response.status_code}: {response.text[:500]}")
 
@@ -179,6 +210,7 @@ def _review_for_prompt(review: Review) -> dict:
         "expressions_to_add": review.expressions_to_add,
         "expressions_to_use_next_time": review.expressions_to_use_next_time,
         "weak_points": getattr(review, "weak_points", []) or [],
+        "words_and_phrases_actually_used": getattr(review, "words_and_phrases_actually_used", []) or [],
         "more_natural_expressions": [
             {
                 "your_phrase": expression.your_phrase,

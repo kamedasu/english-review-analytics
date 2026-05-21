@@ -183,7 +183,12 @@ def _sync_page_reviews(
         if not review_date:
             parser_warnings.append(f"{page_title}: review date not found in a chunk.")
             continue
-        if has_processed_review(state, page_id, review_date, chunk_hash):
+        if has_processed_review(state, page_id, review_date, chunk_hash) and not _needs_schema_refresh(
+            reviews,
+            page_id,
+            review_date,
+            chunk,
+        ):
             skipped_count += 1
             continue
 
@@ -254,6 +259,15 @@ def _review_date_from_chunk(chunk: str) -> str:
         if parsed:
             return parsed.isoformat()
     return ""
+
+
+def _needs_schema_refresh(reviews: list[Review], page_id: str, review_date: str, chunk: str) -> bool:
+    if "Words and phrases actually used" not in chunk:
+        return False
+    for review in reviews:
+        if review.source_page_id == page_id and review.date.isoformat() == review_date:
+            return not bool(getattr(review, "words_and_phrases_actually_used", []) or [])
+    return False
 
 
 def _month_from_title_or_reviews(title: str, reviews: list[Review], page_id: str) -> str:

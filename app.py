@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.analytics import (
+    actually_used_to_dataframe,
     available_months,
     available_quarters,
     available_years,
@@ -90,6 +91,8 @@ def main() -> None:
 
     render_improvement_focus(period_reviews)
 
+    render_actually_used(period_reviews)
+
     render_reused_phrase_candidates(period_reviews)
 
     render_phrase_cards(period_reviews)
@@ -160,6 +163,15 @@ def render_improvement_focus(reviews: list) -> None:
         st.caption("この期間には more natural expressions の記録はまだありません。")
     else:
         st.dataframe(more_natural_df, width="stretch", hide_index=True)
+
+
+def render_actually_used(reviews: list) -> None:
+    st.subheader("Words and Phrases Actually Used")
+    actually_used_df = actually_used_to_dataframe(reviews)
+    if actually_used_df.empty:
+        st.caption("この期間には words and phrases actually used の記録はまだありません。")
+    else:
+        st.dataframe(actually_used_df, width="stretch", hide_index=True)
 
 
 def render_reused_phrase_candidates(reviews: list) -> None:

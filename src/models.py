@@ -35,6 +35,7 @@ class Review(BaseModel):
     expressions_to_use_next_time: list[str] = Field(default_factory=list)
     weak_points: list[str] = Field(default_factory=list)
     more_natural_expressions: list[MoreNaturalExpression] = Field(default_factory=list)
+    words_and_phrases_actually_used: list[str] = Field(default_factory=list)
     comment: str = ""
     phrase_cards: list[PhraseCard] = Field(default_factory=list)
     raw_markdown: str = ""

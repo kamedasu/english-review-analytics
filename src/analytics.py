@@ -87,6 +87,7 @@ def reviews_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
             "expressions_to_use_next_time": "\n".join(review.expressions_to_use_next_time),
             "weak_points": "\n".join(getattr(review, "weak_points", []) or []),
             "more_natural_count": len(getattr(review, "more_natural_expressions", []) or []),
+            "actually_used_count": len(getattr(review, "words_and_phrases_actually_used", []) or []),
             "comment": review.comment,
             "phrase_count": len(review.phrase_cards),
             "source_page_title": review.source_page_title,
@@ -140,6 +141,36 @@ def more_natural_expressions_to_dataframe(reviews: list[Review]) -> pd.DataFrame
                 }
             )
     return pd.DataFrame(rows)
+
+
+def actually_used_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
+    grouped: dict[str, dict] = {}
+    for review in reviews:
+        for phrase in getattr(review, "words_and_phrases_actually_used", []) or []:
+            text = (phrase or "").strip()
+            if not text:
+                continue
+            key = normalize_phrase(text)
+            if key not in grouped:
+                grouped[key] = {
+                    "phrase": text,
+                    "dates": set(),
+                    "occurrence_count": 0,
+                }
+            grouped[key]["dates"].add(review.date.isoformat())
+            grouped[key]["occurrence_count"] += 1
+
+    rows = [
+        {
+            "phrase": item["phrase"],
+            "dates": ", ".join(sorted(item["dates"])),
+            "occurrence_count": item["occurrence_count"],
+        }
+        for item in grouped.values()
+    ]
+    return pd.DataFrame(
+        sorted(rows, key=lambda row: (row["occurrence_count"], row["dates"], row["phrase"]), reverse=True)
+    )
 
 
 def phrases_to_dataframe(cards: list[PhraseCard]) -> pd.DataFrame:
