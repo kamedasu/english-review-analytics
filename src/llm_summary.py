@@ -8,6 +8,7 @@ import requests
 
 from src.config import get_settings
 from src.models import Review, StudySummary
+from src.reuse_detector import ReviewTargetSummary, normalize_phrase, summarize_review_targets
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -32,24 +33,52 @@ def generate_rule_based_summary(summary: StudySummary, reviews: list[Review], pe
         return "この期間のレビューはまだありません。"
 
     topics = [review.topic for review in reviews if review.topic]
-    frequent_priorities = [
-        card.priority
-        for review in reviews
-        for card in review.phrase_cards
-        if card.priority
-    ]
-    priority_note = ""
-    if frequent_priorities:
-        priority_note = f" 優先度つきフレーズは {len(frequent_priorities)} 件あります。"
-
     period_label = _period_label_ja(period_type)
+    period_prefix = _period_prefix_ja(period_type)
+    context = _summary_learning_context(reviews, period_type)
+    top_reused = context["top_reused_phrases"]
+    unused = context["unused_expression_candidates"]
+    weak_points = context["weak_points"][:3]
+    natural = context["more_natural_examples"][:3]
+
+    reused_lines = _format_phrase_list(top_reused, "reused_count")
+    unused_lines = _format_phrase_list(unused, "source")
+    weak_lines = "\n".join(f"- {item}" for item in weak_points) if weak_points else "- 未記録"
+    natural_lines = (
+        "\n".join(
+            f"- {item['your_phrase']} -> {item['more_natural']}"
+            + (f" ({item['note']})" if item.get("note") else "")
+            for item in natural
+        )
+        if natural
+        else "- 未記録"
+    )
+
     return (
-        f"{summary.month} の{period_label}では {summary.study_days} 日学習し、合計 "
-        f"{summary.total_duration_minutes} 分取り組みました。"
-        f"レビューは {summary.review_count} 件、フレーズは {summary.phrase_count} 件です。"
-        f"最長連続学習日数は {summary.longest_streak} 日でした。"
-        f"{priority_note}"
-        f" 最近の主なトピック: {', '.join(topics[:5]) if topics else '未入力'}。"
+        f"## {period_prefix}の成長ポイント\n"
+        f"- {period_label}では {summary.study_days} 日、合計 {summary.total_duration_minutes} 分学習しました。\n"
+        f"- 主な会話テーマ: {', '.join(topics[:5]) if topics else '未入力'}。\n"
+        "- よく再利用できた表現:\n"
+        f"{reused_lines}\n\n"
+        f"## {period_prefix}の弱点\n"
+        "- 記録されたweak points:\n"
+        f"{weak_lines}\n"
+        "- より自然な言い換えの例:\n"
+        f"{natural_lines}\n\n"
+        "## 次に増やすべき表現\n"
+        f"{unused_lines}\n"
+        "- 各表現は次回の会話で1回ずつ使うことを目標にしてください。\n\n"
+        "## 次回以降の学習テーマ\n"
+        "- 未使用表現から1つ選び、日常・食べ物・旅行・仕事後の話題で使う。\n"
+        "- More natural expressions に出た言い換えを、短い例文で言い直す。\n\n"
+        f"## {period_prefix}の再利用成功フレーズ Top 5\n"
+        f"{reused_lines}\n\n"
+        "## まだ使えていない表現 Top 5\n"
+        f"{unused_lines}\n\n"
+        "## 1分復習ドリル\n"
+        "- 日本語→英語: 今日の気分を、未使用表現を1つ使って言う。\n"
+        "- 穴埋め: I want to ____ after work.\n"
+        "- 言い換え: more natural expressions の1つを使って短く言い直す。"
     )
 
 
@@ -128,7 +157,7 @@ def _generate_openai_summary(
                 "model": model,
                 "instructions": _summary_instructions(period_type),
                 "input": _build_summary_prompt(summary, reviews, period_type),
-                "max_output_tokens": 900,
+                "max_output_tokens": 2200,
             },
             timeout=60,
         )
@@ -153,12 +182,14 @@ def _generate_openai_summary(
 def _summary_instructions(period_type: str) -> str:
     return (
         "あなたは英会話学習のコーチです。"
-        f"学習レビューの構造化データを読み、日本語で具体的かつ短めに{_period_label_ja(period_type)}サマリーを書いてください。"
+        f"学習レビューの構造化データを読み、日本語で具体的で実践的な{_period_label_ja(period_type)}サマリーを書いてください。"
         "断定しすぎず、データから読み取れる範囲で提案してください。"
+        "危険、不自然、文脈リスクが高い表現は避け、日常会話で安全に使いやすい表現を優先してください。"
     )
 
 
 def _build_summary_prompt(summary: StudySummary, reviews: list[Review], period_type: str) -> str:
+    learning_context = _summary_learning_context(reviews, period_type)
     payload = {
         "period_type": period_type,
         "period": summary.month,
@@ -170,17 +201,36 @@ def _build_summary_prompt(summary: StudySummary, reviews: list[Review], period_t
             "phrase_count": summary.phrase_count,
             "reused_phrase_count": summary.reused_phrase_count,
         },
-        "reviews": [_review_for_prompt(review) for review in sorted(reviews, key=lambda item: item.date)],
+        "learning_context": learning_context,
     }
+    period_prefix = _period_prefix_ja(period_type)
+    detail_note = (
+        "Monthlyは具体例をやや詳しめにしてください。"
+        if period_type == "Monthly"
+        else "Quarterly / Yearlyは要点を絞ってMonthlyより簡潔にしてください。"
+    )
     return (
         f"以下の英会話レビュー分析データから、{_period_label_ja(period_type)}サマリーを作成してください。\n"
-        "必ず次の見出しを含めてください。\n"
-        f"## {_period_prefix_ja(period_type)}の成長ポイント\n"
-        f"## {_period_prefix_ja(period_type)}の弱点\n"
+        "単なる総評ではなく、次回の会話で何を言うか、何を復習するかが分かる形にしてください。\n"
+        f"{detail_note}\n"
+        "必ず次の見出しをこの順番で含めてください。\n"
+        f"## {period_prefix}の成長ポイント\n"
+        f"## {period_prefix}の弱点\n"
         "## 次に増やすべき表現\n"
-        "## 次回以降の学習テーマ\n\n"
-        "各見出しは2から4個の箇条書きにしてください。\n"
-        "抽象論だけでなく、topicやphraseから分かる具体例を入れてください。\n\n"
+        "## 次回以降の学習テーマ\n"
+        f"## {period_prefix}の再利用成功フレーズ Top 5\n"
+        "## まだ使えていない表現 Top 5\n"
+        "## 1分復習ドリル\n\n"
+        "入力データは全文レビューではなく、summary生成用に要約済みのコンテキストです。\n"
+        "各見出しの要件:\n"
+        f"- {period_prefix}の成長ポイント: 今期よく使えた表現、強くなった会話スキル、成長を示す具体例を含める。\n"
+        "- 弱点: 弱点名、よくある誤り、より自然な形、短い例文を各3つ程度含める。\n"
+        "- 次に増やすべき表現: phrase、意味、使う場面、短い例文3つを含める。日常会話で使いやすく誤用リスクが低いものを優先する。\n"
+        "- 次回以降の学習テーマ: 抽象的なテーマではなく、次回会話で実行するミッション形式にする。\n"
+        "- 再利用成功フレーズ Top 5: learning_context.top_reused_phrases を優先し、reused_countを添える。\n"
+        "- まだ使えていない表現 Top 5: learning_context.unused_expression_candidates を優先する。\n"
+        "- 1分復習ドリル: 日本語→英語、穴埋め、言い換えを合計3問だけ出す。\n"
+        "全体は箇条書き中心で、長くなりすぎないようにしてください。\n\n"
         f"データ:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -201,36 +251,122 @@ def _period_prefix_ja(period_type: str) -> str:
     }.get(period_type, "この期間")
 
 
-def _review_for_prompt(review: Review) -> dict:
+def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
+    limit = 5 if period_type == "Monthly" else 3
+    example_limit = 2 if period_type == "Monthly" else 1
+    retention = summarize_review_targets(reviews, reviews)
+    top_reused = [
+        _retention_item_for_prompt(item, example_limit)
+        for item in retention
+        if item.reused_count > 0
+    ][:5]
+    unused = [
+        _retention_item_for_prompt(item, example_limit)
+        for item in _unused_expression_candidates(retention)
+    ][:5]
+
+    topics = _top_normalized_values(review.topic for review in reviews)
+    actual_used = _top_normalized_values(
+        phrase
+        for review in reviews
+        for phrase in (getattr(review, "words_and_phrases_actually_used", []) or [])
+    )
+    weak_points = [
+        value
+        for value in _top_normalized_values(
+            weak_point
+            for review in reviews
+            for weak_point in (getattr(review, "weak_points", []) or [])
+        )
+    ][:limit]
+    natural_examples = [
+        {
+            "your_phrase": expression.your_phrase,
+            "more_natural": expression.more_natural,
+            "note": expression.note,
+        }
+        for review in sorted(reviews, key=lambda item: item.date, reverse=True)
+        for expression in (getattr(review, "more_natural_expressions", []) or [])
+    ][:limit]
+
     return {
-        "date": review.date.isoformat(),
-        "duration_minutes": review.duration_minutes,
-        "topic": review.topic,
-        "good_points": review.good_points,
-        "expressions_to_add": review.expressions_to_add,
-        "expressions_to_use_next_time": review.expressions_to_use_next_time,
-        "weak_points": getattr(review, "weak_points", []) or [],
-        "words_and_phrases_actually_used": getattr(review, "words_and_phrases_actually_used", []) or [],
-        "more_natural_expressions": [
-            {
-                "your_phrase": expression.your_phrase,
-                "more_natural": expression.more_natural,
-                "note": expression.note,
-            }
-            for expression in (getattr(review, "more_natural_expressions", []) or [])
-        ],
-        "comment": review.comment,
-        "phrase_cards": [
-            {
-                "phrase": card.phrase,
-                "meaning": card.meaning,
-                "example": card.example,
-                "priority": card.priority,
-                "next_review_date": card.next_review_date.isoformat() if card.next_review_date else "",
-            }
-            for card in review.phrase_cards
-        ],
+        "top_reused_phrases": top_reused,
+        "unused_expression_candidates": unused,
+        "weak_points": weak_points,
+        "more_natural_examples": natural_examples,
+        "topics": topics[:5],
+        "actually_used_top": actual_used[:5],
+        "context_limits": {
+            "top_reused_phrases": 5,
+            "unused_expression_candidates": 5,
+            "weak_points": limit,
+            "more_natural_examples": limit,
+            "topics": 5,
+        },
     }
+
+
+def _retention_item_for_prompt(item: ReviewTargetSummary, example_limit: int) -> dict:
+    data = {
+        "phrase": item.phrase,
+        "reused_count": item.reused_count,
+        "review_status": item.review_status,
+    }
+    if item.highest_priority:
+        data["highest_priority"] = item.highest_priority
+    if item.meanings:
+        data["meanings"] = item.meanings[:example_limit]
+    if item.examples:
+        data["examples"] = item.examples[:example_limit]
+    return data
+
+
+def _unused_expression_candidates(retention: list[ReviewTargetSummary]) -> list[ReviewTargetSummary]:
+    priority_rank = {"High": 3, "Medium": 2, "Low": 1}
+    candidates = [
+        item
+        for item in retention
+        if "actually_used" not in item.matched_fields
+    ]
+    return sorted(
+        candidates,
+        key=lambda item: (
+            priority_rank.get(item.highest_priority, 0),
+            item.first_seen_date,
+            item.phrase.lower(),
+        ),
+        reverse=True,
+    )
+
+
+def _top_normalized_values(values) -> list[str]:
+    grouped: dict[str, dict] = {}
+    for value in values:
+        text = (value or "").strip()
+        key = normalize_phrase(text)
+        if not key:
+            continue
+        if key not in grouped:
+            grouped[key] = {"text": text, "count": 0}
+        grouped[key]["count"] += 1
+    return [
+        item["text"]
+        for item in sorted(grouped.values(), key=lambda item: (item["count"], item["text"].lower()), reverse=True)
+    ]
+
+
+def _format_phrase_list(items: list[dict], detail_key: str) -> str:
+    if not items:
+        return "- 該当なし"
+    lines = []
+    for item in items[:5]:
+        detail = item.get(detail_key, "")
+        suffix = f" ({detail_key}: {detail})" if detail != "" else ""
+        meaning = ""
+        if item.get("meanings"):
+            meaning = f" - {item['meanings'][0]}"
+        lines.append(f"- {item.get('phrase', '')}{meaning}{suffix}")
+    return "\n".join(lines)
 
 
 def _extract_response_text(data: dict) -> str:
