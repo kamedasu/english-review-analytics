@@ -141,13 +141,11 @@ def review_retention_to_dataframe(
             "phrase": item.phrase,
             "first_seen_date": item.first_seen_date,
             "last_seen_date": item.last_seen_date,
-            "occurrence_count": item.occurrence_count,
             "highest_priority": item.highest_priority,
             "meanings": "\n".join(item.meanings),
             "examples": "\n".join(item.examples),
             "reused_count": item.reused_count,
-            "matched_fields": ", ".join(item.matched_fields),
-            "retention_label": item.retention_label,
+            "review_status": item.review_status,
         }
         for item in summarize_review_targets(base_reviews, history_reviews)
     ]

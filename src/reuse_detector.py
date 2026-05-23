@@ -37,7 +37,7 @@ class ReviewTargetSummary:
     examples: list[str]
     reused_count: int
     matched_fields: list[str]
-    retention_label: str
+    review_status: str
 
 
 def detect_reused_phrases(reviews: list[Review]) -> list[ReusedPhrase]:
@@ -117,7 +117,7 @@ def summarize_review_targets(base_reviews: list[Review], history_reviews: list[R
             examples=sorted(item["examples"]),
             reused_count=len(item["reuse_dates"]),
             matched_fields=sorted(item["matched_fields"]),
-            retention_label=_retention_label(len(item["reuse_dates"]), sorted(item["matched_fields"])),
+            review_status=_retention_label(len(item["reuse_dates"]), sorted(item["matched_fields"])),
         )
         for item in grouped.values()
     ]
