@@ -3,17 +3,14 @@ from __future__ import annotations
 import streamlit as st
 
 from src.analytics import (
-    actually_used_to_dataframe,
     available_months,
     available_quarters,
     available_years,
-    dedupe_phrases_to_dataframe,
     filter_reviews_by_month,
     filter_reviews_by_quarter,
     filter_reviews_by_year,
     more_natural_expressions_to_dataframe,
-    phrase_cards_for_reviews,
-    phrases_to_dataframe,
+    review_retention_to_dataframe,
     reviews_to_dataframe,
     summarize_month,
     summarize_quarter,
@@ -22,7 +19,6 @@ from src.analytics import (
 )
 from src.data_loader import load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
-from src.reuse_detector import summarize_reused_phrases
 
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
@@ -91,11 +87,7 @@ def main() -> None:
 
     render_improvement_focus(period_reviews)
 
-    render_actually_used(period_reviews)
-
-    render_reused_phrase_candidates(period_reviews)
-
-    render_phrase_cards(period_reviews)
+    render_review_retention(period_reviews, reviews)
 
     st.subheader("Reviews")
     review_df = reviews_to_dataframe(period_reviews)
@@ -165,68 +157,13 @@ def render_improvement_focus(reviews: list) -> None:
         st.dataframe(more_natural_df, width="stretch", hide_index=True)
 
 
-def render_actually_used(reviews: list) -> None:
-    st.subheader("Words and Phrases Actually Used")
-    actually_used_df = actually_used_to_dataframe(reviews)
-    if actually_used_df.empty:
-        st.caption("この期間には words and phrases actually used の記録はまだありません。")
+def render_review_retention(period_reviews: list, all_reviews: list) -> None:
+    st.subheader("Review & Retention Analysis")
+    retention_df = review_retention_to_dataframe(period_reviews, all_reviews)
+    if retention_df.empty:
+        st.caption("この期間には復習対象の表現がまだありません。")
     else:
-        st.dataframe(actually_used_df, width="stretch", hide_index=True)
-
-
-def render_reused_phrase_candidates(reviews: list) -> None:
-    st.subheader("Reused Phrase Candidates")
-    reused_summary = summarize_reused_phrases(reviews)
-    if not reused_summary:
-        st.caption("この期間の再利用候補はまだありません。")
-        return
-
-    st.dataframe(
-        [
-            {
-                "phrase": item.phrase,
-                "first_seen_date": item.first_seen_date,
-                "reused_dates": ", ".join(item.reused_dates),
-                "reuse_count": item.reuse_count,
-                "matched_fields": ", ".join(item.matched_fields),
-                "last_used_date": item.last_used_date,
-                "retention_label": item.retention_label,
-            }
-            for item in reused_summary
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def render_phrase_cards(reviews: list) -> None:
-    st.subheader("Phrase Cards")
-    phrase_cards = phrase_cards_for_reviews(reviews)
-    priorities = available_priorities(phrase_cards)
-    selected_priorities = st.multiselect(
-        "Priority",
-        options=priorities,
-        default=default_priorities(priorities),
-    )
-    filtered_phrase_cards = filter_phrase_cards_by_priority(phrase_cards, selected_priorities)
-
-    view_mode = st.radio(
-        "Phrase card view",
-        ["Dedupe Phrase Cards", "Raw Phrase Cards"],
-        horizontal=True,
-    )
-    if view_mode == "Dedupe Phrase Cards":
-        phrase_df = dedupe_phrases_to_dataframe(filtered_phrase_cards)
-    else:
-        phrase_df = phrases_to_dataframe(filtered_phrase_cards).drop(columns=["next_review_date"], errors="ignore")
-
-    if phrase_df.empty:
-        if phrase_cards:
-            st.caption("選択したpriorityに一致するフレーズカードはありません。")
-        else:
-            st.caption("この期間のフレーズカードはありません。")
-    else:
-        st.dataframe(phrase_df, width="stretch", hide_index=True)
+        st.dataframe(retention_df, width="stretch", hide_index=True)
 
 
 def resolve_cache_event(loaded_at: str, refresh: bool) -> str:
@@ -243,24 +180,6 @@ def resolve_cache_event(loaded_at: str, refresh: bool) -> str:
 
     st.session_state["last_load"] = {"signature": signature, "loaded_at": loaded_at}
     return event
-
-
-def available_priorities(cards: list) -> list[str]:
-    priority_order = ["High", "Medium", "Low"]
-    existing = {card.priority.strip() for card in cards if card.priority.strip()}
-    ordered = [priority for priority in priority_order if priority in existing]
-    extra = sorted(existing - set(priority_order))
-    return ordered + extra
-
-
-def default_priorities(priorities: list[str]) -> list[str]:
-    defaults = [priority for priority in ["High", "Medium"] if priority in priorities]
-    return defaults or priorities
-
-
-def filter_phrase_cards_by_priority(cards: list, priorities: list[str]) -> list:
-    selected = set(priorities)
-    return [card for card in cards if card.priority in selected]
 
 
 def render_metrics(summary) -> None:

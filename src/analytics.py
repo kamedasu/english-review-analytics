@@ -5,7 +5,7 @@ from collections import defaultdict
 import pandas as pd
 
 from src.models import MoreNaturalExpression, PhraseCard, Review, StudySummary
-from src.reuse_detector import detect_reused_phrases, normalize_phrase
+from src.reuse_detector import detect_reused_phrases, normalize_phrase, summarize_review_targets
 from src.streak import longest_streak
 from src.utils.dates import month_key
 
@@ -86,11 +86,6 @@ def reviews_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
             "expressions_to_add": "\n".join(review.expressions_to_add),
             "expressions_to_use_next_time": "\n".join(review.expressions_to_use_next_time),
             "weak_points": "\n".join(getattr(review, "weak_points", []) or []),
-            "more_natural_count": len(getattr(review, "more_natural_expressions", []) or []),
-            "actually_used_count": len(getattr(review, "words_and_phrases_actually_used", []) or []),
-            "comment": review.comment,
-            "phrase_count": len(review.phrase_cards),
-            "source_page_title": review.source_page_title,
         }
         for review in sorted(reviews, key=lambda item: item.date, reverse=True)
     ]
@@ -117,14 +112,10 @@ def weak_points_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
     rows = [
         {
             "weak_point": item["weak_point"],
-            "dates": ", ".join(sorted(item["dates"])),
-            "occurrence_count": item["occurrence_count"],
         }
         for item in grouped.values()
     ]
-    return pd.DataFrame(
-        sorted(rows, key=lambda row: (row["occurrence_count"], row["dates"], row["weak_point"]), reverse=True)
-    )
+    return pd.DataFrame(sorted(rows, key=lambda row: row["weak_point"]))
 
 
 def more_natural_expressions_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
@@ -137,40 +128,30 @@ def more_natural_expressions_to_dataframe(reviews: list[Review]) -> pd.DataFrame
                     "Your phrase": expression.your_phrase,
                     "More natural": expression.more_natural,
                     "Note": expression.note,
-                    "Date": review.date.isoformat(),
                 }
             )
     return pd.DataFrame(rows)
 
 
-def actually_used_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
-    grouped: dict[str, dict] = {}
-    for review in reviews:
-        for phrase in getattr(review, "words_and_phrases_actually_used", []) or []:
-            text = (phrase or "").strip()
-            if not text:
-                continue
-            key = normalize_phrase(text)
-            if key not in grouped:
-                grouped[key] = {
-                    "phrase": text,
-                    "dates": set(),
-                    "occurrence_count": 0,
-                }
-            grouped[key]["dates"].add(review.date.isoformat())
-            grouped[key]["occurrence_count"] += 1
-
+def review_retention_to_dataframe(
+    base_reviews: list[Review], history_reviews: list[Review] | None = None
+) -> pd.DataFrame:
     rows = [
         {
-            "phrase": item["phrase"],
-            "dates": ", ".join(sorted(item["dates"])),
-            "occurrence_count": item["occurrence_count"],
+            "phrase": item.phrase,
+            "first_seen_date": item.first_seen_date,
+            "last_seen_date": item.last_seen_date,
+            "occurrence_count": item.occurrence_count,
+            "highest_priority": item.highest_priority,
+            "meanings": "\n".join(item.meanings),
+            "examples": "\n".join(item.examples),
+            "reused_count": item.reused_count,
+            "matched_fields": ", ".join(item.matched_fields),
+            "retention_label": item.retention_label,
         }
-        for item in grouped.values()
+        for item in summarize_review_targets(base_reviews, history_reviews)
     ]
-    return pd.DataFrame(
-        sorted(rows, key=lambda row: (row["occurrence_count"], row["dates"], row["phrase"]), reverse=True)
-    )
+    return pd.DataFrame(rows)
 
 
 def phrases_to_dataframe(cards: list[PhraseCard]) -> pd.DataFrame:
