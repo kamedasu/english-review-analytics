@@ -8,7 +8,9 @@ from src.utils.dates import parse_date
 from src.utils.hashing import content_hash
 
 
-REVIEW_HEADER_RE = re.compile(r"(?m)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+review\b.*$")
+REVIEW_HEADER_RE = re.compile(
+    r"(?im)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+(line\s+english\s+review|review)\b.*$"
+)
 CARD_HEADER_RE = re.compile(r"(?m)^###\s+Card\s+\d+.*$")
 FieldValue = str | list[str]
 
@@ -53,10 +55,11 @@ def parse_review(
         _add_warning(warnings, f"{source_page_title or source_page_id}: review date not found.")
         return None
 
-    body_before_cards = markdown.split("## Phrase Cards", 1)[0]
+    body_before_cards = re.split(r"(?im)^##\s*Phrase\s+Cards\s*$", markdown, maxsplit=1)[0]
     fields = _parse_review_fields(body_before_cards)
     review_hash = content_hash(markdown)
     review_id = f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
+    review_type = _extract_review_type(markdown)
 
     phrase_cards = _parse_phrase_cards(markdown, review_id, review_date)
     words_and_phrases_actually_used = _parse_words_and_phrases_actually_used(markdown)
@@ -72,13 +75,32 @@ def parse_review(
         review_id=review_id,
         source_page_id=source_page_id,
         source_page_title=source_page_title,
+        review_type=review_type,
         date=review_date,
         duration_minutes=_safe_int(_get_field(fields, "Duration")),
         topic=_normalize_text_field(_get_field(fields, "Topic")),
-        good_points=_normalize_list_field(_get_field(fields, "Good points")),
-        expressions_to_add=_normalize_list_field(_get_field(fields, "Expressions to add")),
-        expressions_to_use_next_time=_normalize_list_field(_get_field(fields, "Expressions to use next time")),
-        weak_points=_normalize_list_field(_get_first_field(fields, ["Weak points", "Weak point"])),
+        situation=_normalize_optional_text(
+            _get_field_or_section(fields, markdown, ["Situation"])
+        ),
+        my_draft=_get_list_field_or_section(fields, markdown, ["My draft", "Draft"]),
+        more_natural_version=_get_list_field_or_section(
+            fields,
+            markdown,
+            ["More natural version", "Natural version", "Corrected version"],
+        ),
+        why_it_was_corrected=_get_list_field_or_section(
+            fields,
+            markdown,
+            ["Why it was corrected", "Why corrected", "Reason"],
+        ),
+        good_points=_get_list_field_or_section(fields, markdown, ["Good points", "Good point"]),
+        expressions_to_add=_get_list_field_or_section(fields, markdown, ["Expressions to add"]),
+        expressions_to_use_next_time=_get_list_field_or_section(
+            fields,
+            markdown,
+            ["Expressions to use next time"],
+        ),
+        weak_points=_get_list_field_or_section(fields, markdown, ["Weak points", "Weak point"]),
         more_natural_expressions=more_natural_expressions,
         words_and_phrases_actually_used=words_and_phrases_actually_used,
         comment=_normalize_comment(_get_field(fields, "Comment"), review_id, warnings),
@@ -99,6 +121,13 @@ def _extract_review_date(markdown: str) -> date | None:
     if header:
         return parse_date(header.group(1).replace("/", "-"))
     return None
+
+
+def _extract_review_type(markdown: str) -> str:
+    header = REVIEW_HEADER_RE.search(markdown)
+    if not header:
+        return "normal"
+    return "line" if "line" in header.group(2).lower() else "normal"
 
 
 def _parse_review_fields(markdown: str) -> dict[str, FieldValue]:
@@ -149,11 +178,30 @@ def _get_first_field(fields: dict[str, FieldValue], names: list[str]) -> FieldVa
     return []
 
 
+def _get_field_or_section(fields: dict[str, FieldValue], markdown: str, names: list[str]) -> FieldValue:
+    value = _get_first_field(fields, names)
+    if value:
+        return value
+    for name in names:
+        section_items = _parse_section_items(markdown, name)
+        if section_items:
+            return section_items
+        section_text = _parse_section_text(markdown, name)
+        if section_text:
+            return section_text
+    return []
+
+
+def _get_list_field_or_section(fields: dict[str, FieldValue], markdown: str, names: list[str]) -> list[str]:
+    return _normalize_list_field(_get_field_or_section(fields, markdown, names))
+
+
 def _parse_phrase_cards(markdown: str, review_id: str, review_date: date) -> list[PhraseCard]:
-    if "## Phrase Cards" not in markdown:
+    section_match = re.search(r"(?im)^##\s*Phrase\s+Cards\s*$", markdown)
+    if not section_match:
         return []
 
-    _, cards_text = markdown.split("## Phrase Cards", 1)
+    cards_text = markdown[section_match.end() :]
     matches = list(CARD_HEADER_RE.finditer(cards_text))
     cards: list[PhraseCard] = []
 
@@ -205,6 +253,39 @@ def _parse_words_and_phrases_actually_used(markdown: str) -> list[str]:
         if value:
             items.append(value)
     return items
+
+
+def _parse_section_items(markdown: str, section_name: str) -> list[str]:
+    body = _section_body(markdown, section_name)
+    if not body:
+        return []
+
+    items: list[str] = []
+    for line in body.splitlines():
+        match = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            items.append(value)
+    return items
+
+
+def _parse_section_text(markdown: str, section_name: str) -> str:
+    body = _section_body(markdown, section_name)
+    if not body:
+        return ""
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return "\n".join(lines).strip()
+
+
+def _section_body(markdown: str, section_name: str) -> str:
+    pattern = (
+        rf"(?mis)^##\s*{re.escape(section_name).replace(r'\\ ', r'\\s+')}\s*$"
+        r"(?P<body>.*?)(?=^##\s+|^#\s+|\Z)"
+    )
+    section_match = re.search(pattern, markdown)
+    return section_match.group("body").strip() if section_match else ""
 
 
 def _parse_more_natural_expressions(
@@ -344,6 +425,11 @@ def _normalize_text_field(value: FieldValue) -> str:
     if isinstance(value, list):
         return " ".join(item for item in value if item).strip()
     return value.strip()
+
+
+def _normalize_optional_text(value: FieldValue) -> str | None:
+    text = _normalize_text_field(value)
+    return text or None
 
 
 def _normalize_list_field(value: FieldValue) -> list[str]:

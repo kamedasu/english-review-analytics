@@ -200,7 +200,11 @@ def _sync_page_reviews(
         reviews = [
             item
             for item in reviews
-            if not (item.source_page_id == page_id and item.date == review.date)
+            if not (
+                item.source_page_id == page_id
+                and item.date == review.date
+                and getattr(item, "review_type", "normal") == getattr(review, "review_type", "normal")
+            )
         ]
         if len(reviews) < previous_count:
             updated_count += previous_count - len(reviews)
@@ -253,7 +257,10 @@ def _review_date_from_chunk(chunk: str) -> str:
         parsed = parse_date(date_line.group(1))
         if parsed:
             return parsed.isoformat()
-    header = re.search(r"(?m)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+review\b", chunk)
+    header = re.search(
+        r"(?im)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+(?:line\s+english\s+review|review)\b",
+        chunk,
+    )
     if header:
         parsed = parse_date(header.group(1).replace("/", "-"))
         if parsed:

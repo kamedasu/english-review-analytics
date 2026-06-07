@@ -279,6 +279,14 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
             for weak_point in (getattr(review, "weak_points", []) or [])
         )
     ][:limit]
+    good_points = [
+        value
+        for value in _top_normalized_values(
+            good_point
+            for review in reviews
+            for good_point in (getattr(review, "good_points", []) or [])
+        )
+    ][:limit]
     natural_examples = [
         {
             "your_phrase": expression.your_phrase,
@@ -292,8 +300,10 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
     return {
         "top_reused_phrases": top_reused,
         "unused_expression_candidates": unused,
+        "good_points": good_points,
         "weak_points": weak_points,
         "more_natural_examples": natural_examples,
+        "line_review_examples": _line_review_examples(reviews, limit),
         "topics": topics[:5],
         "actually_used_top": actual_used[:5],
         "context_limits": {
@@ -304,6 +314,26 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
             "topics": 5,
         },
     }
+
+
+def _line_review_examples(reviews: list[Review], limit: int) -> list[dict]:
+    examples: list[dict] = []
+    for review in sorted(reviews, key=lambda item: item.date, reverse=True):
+        if getattr(review, "review_type", "normal") != "line":
+            continue
+        examples.append(
+            {
+                "date": review.date.isoformat(),
+                "topic": review.topic,
+                "situation": review.situation or "",
+                "my_draft": (getattr(review, "my_draft", []) or [])[:2],
+                "more_natural_version": (getattr(review, "more_natural_version", []) or [])[:2],
+                "why_it_was_corrected": (getattr(review, "why_it_was_corrected", []) or [])[:2],
+            }
+        )
+        if len(examples) >= limit:
+            break
+    return examples
 
 
 def _retention_item_for_prompt(item: ReviewTargetSummary, example_limit: int) -> dict:

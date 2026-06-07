@@ -27,9 +27,14 @@ class Review(BaseModel):
     review_id: str
     source_page_id: str = ""
     source_page_title: str = ""
+    review_type: str = "normal"
     date: date
     duration_minutes: int = 0
     topic: str = ""
+    situation: str | None = None
+    my_draft: list[str] = Field(default_factory=list)
+    more_natural_version: list[str] = Field(default_factory=list)
+    why_it_was_corrected: list[str] = Field(default_factory=list)
     good_points: list[str] = Field(default_factory=list)
     expressions_to_add: list[str] = Field(default_factory=list)
     expressions_to_use_next_time: list[str] = Field(default_factory=list)

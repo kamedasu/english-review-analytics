@@ -8,7 +8,9 @@ from src.analytics import (
     available_years,
     filter_reviews_by_month,
     filter_reviews_by_quarter,
+    filter_reviews_by_type,
     filter_reviews_by_year,
+    line_reviews_to_dataframe,
     more_natural_expressions_to_dataframe,
     review_retention_to_dataframe,
     reviews_to_dataframe,
@@ -89,9 +91,7 @@ def main() -> None:
 
     render_review_retention(period_reviews, reviews)
 
-    st.subheader("Reviews")
-    review_df = reviews_to_dataframe(period_reviews)
-    st.dataframe(review_df, width="stretch", hide_index=True)
+    render_reviews(period_reviews)
 
 
 def select_period(reviews: list, period_type: str):
@@ -164,6 +164,26 @@ def render_review_retention(period_reviews: list, all_reviews: list) -> None:
         st.caption("この期間には復習対象の表現がまだありません。")
     else:
         st.dataframe(retention_df, width="stretch", hide_index=True)
+
+
+def render_reviews(reviews: list) -> None:
+    st.subheader("Reviews")
+    normal_reviews = filter_reviews_by_type(reviews, "normal")
+    line_reviews = filter_reviews_by_type(reviews, "line")
+
+    st.markdown("#### Reviews")
+    review_df = reviews_to_dataframe(normal_reviews)
+    if review_df.empty:
+        st.caption("この期間には通常reviewはまだありません。")
+    else:
+        st.dataframe(review_df, width="stretch", hide_index=True)
+
+    st.markdown("#### Line Reviews")
+    line_review_df = line_reviews_to_dataframe(line_reviews)
+    if line_review_df.empty:
+        st.caption("この期間には line english review はまだありません。")
+    else:
+        st.dataframe(line_review_df, width="stretch", hide_index=True)
 
 
 def resolve_cache_event(loaded_at: str, refresh: bool) -> str:

@@ -92,6 +92,31 @@ def reviews_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def line_reviews_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
+    rows = [
+        {
+            "date": review.date.isoformat(),
+            "topic": review.topic,
+            "situation": review.situation or "",
+            "my_draft": "\n".join(getattr(review, "my_draft", []) or []),
+            "more_natural_version": "\n".join(getattr(review, "more_natural_version", []) or []),
+            "expressions_to_add": "\n".join(review.expressions_to_add),
+            "expressions_to_use_next_time": "\n".join(review.expressions_to_use_next_time),
+            "weak_points": "\n".join(getattr(review, "weak_points", []) or []),
+        }
+        for review in sorted(reviews, key=lambda item: item.date, reverse=True)
+    ]
+    return pd.DataFrame(rows)
+
+
+def filter_reviews_by_type(reviews: list[Review], review_type: str) -> list[Review]:
+    return [
+        review
+        for review in reviews
+        if getattr(review, "review_type", "normal") == review_type
+    ]
+
+
 def weak_points_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
     grouped: dict[str, dict] = {}
     for review in reviews:
