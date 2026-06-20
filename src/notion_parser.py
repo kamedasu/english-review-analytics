@@ -219,6 +219,8 @@ def _parse_phrase_cards(markdown: str, review_id: str, review_date: date) -> lis
                 example=fields.get("Example", ""),
                 next_review_date=parse_date(fields.get("Next review date", "")),
                 priority=fields.get("Priority", ""),
+                source=fields.get("Source", "") or fields.get("Phrase Card Source", ""),
+                review_status=fields.get("Review status", "") or fields.get("Status", ""),
                 source_review_id=review_id,
                 source_review_date=review_date,
             )

@@ -11,6 +11,8 @@ class PhraseCard(BaseModel):
     example: str = ""
     next_review_date: date | None = None
     priority: str = ""
+    source: str = ""
+    review_status: str = ""
     source_review_id: str = ""
     source_review_date: date | None = None
 
