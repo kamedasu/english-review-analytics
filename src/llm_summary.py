@@ -335,6 +335,7 @@ def _retention_item_for_prompt(item: ReviewTargetSummary, example_limit: int) ->
 def _phrase_stat_for_prompt(item: dict, example_limit: int) -> dict:
     data = {
         "phrase": item["phrase"],
+        "display_phrase": item["display_phrase"],
         "occurrence_count": item["occurrence_count"],
         "reused_count": item["reused_count"],
         "review_status": item["review_status"],
@@ -422,6 +423,7 @@ def _build_phrase_learning_stats(reviews: list[Review], retention: list[ReviewTa
         results.append(
             {
                 "phrase": item["phrase"],
+                "display_phrase": _core_expression_display(item["phrase"]),
                 "occurrence_count": item["occurrence_count"],
                 "source_counts": dict(item["source_counts"]),
                 "status_counts": dict(item["status_counts"]),
@@ -508,18 +510,22 @@ def _growth_highlights(good_points: list[dict], phrase_stats: list[dict], limit:
     stable_phrases = [
         item
         for item in phrase_stats
-        if _review_status_rank(item["review_status"]) >= _review_status_rank("Retained")
-        or (item["primary_source"] == "confirmed" and item["occurrence_count"] >= 2)
+        if item["learning_value_score"] >= 4
+        and (
+            _review_status_rank(item["review_status"]) >= _review_status_rank("Retained")
+            or (item["primary_source"] == "confirmed" and item["occurrence_count"] >= 2)
+        )
     ]
     for item in stable_phrases[:phrase_limit]:
         highlights.append(
             {
                 "type": "phrase",
-                "label": item["phrase"],
+                "label": item["display_phrase"],
                 "count": item["occurrence_count"],
                 "review_status": item["review_status"],
                 "source": item["primary_source"],
                 "meanings": item["meanings"][:example_limit],
+                "skill_label": _growth_skill_label(item["display_phrase"], item["meanings"]),
             }
         )
     return highlights[:limit]
@@ -555,7 +561,7 @@ def _weakness_highlights(
         highlights.append(
             {
                 "type": "repeated_confirmed",
-                "label": item["phrase"],
+                "label": item["display_phrase"],
                 "count": item["occurrence_count"],
                 "review_status": item["review_status"],
                 "meanings": item["meanings"][:example_limit],
@@ -610,7 +616,7 @@ def _learning_themes(weak_points: list[dict], natural_patterns: list[dict], next
     if natural_patterns:
         themes.append(f"言い換え強化: 「{natural_patterns[0]['pattern']}」に関する修正を1つ選び、その場で言い直す。")
     if next_expression_candidates:
-        phrase = next_expression_candidates[0]["phrase"]
+        phrase = next_expression_candidates[0]["display_phrase"]
         themes.append(f"新出表現の実戦投入: 「{phrase}」を日常トピックで1回自然に使う。")
     if not themes:
         themes.append("次回会話で新しい phrase を1つ選び、会話中に最低1回使う。")
@@ -623,20 +629,24 @@ def _build_drill_items(natural_patterns: list[dict], next_expression_candidates:
     fallback_candidates = [item for item in phrase_stats if item["learning_value_score"] > 0][:4]
     source_items = candidates or fallback_candidates
 
-    for item in source_items[:2]:
-        phrase = item["phrase"]
+    translation_templates = [
+        "I'd like to work {phrase} into the conversation naturally.",
+        "I'm trying to use {phrase} more smoothly when I speak.",
+    ]
+    for index, item in enumerate(source_items[:2]):
+        phrase = item["display_phrase"]
         meaning = item["meanings"][0] if item["meanings"] else "短い一文で言える形から固定する。"
         drills.append(
             {
                 "question": f"日本語→英語: 「次回の会話で {phrase} を自然に使いたい」を英語で言う。",
-                "answer": f"I want to use {phrase} naturally in our next conversation.",
+                "answer": translation_templates[index].format(phrase=phrase),
                 "note": meaning,
             }
         )
 
     fill_items = source_items[2:4] if len(source_items) >= 4 else source_items[:2]
     for item in fill_items[:2]:
-        phrase = item["phrase"]
+        phrase = item["display_phrase"]
         example = item["examples"][0] if item["examples"] else f"I want to {phrase} after work."
         sentence = example.replace(phrase, "____", 1) if phrase in example else f"I want to ____ using {phrase}."
         drills.append(
@@ -660,7 +670,7 @@ def _build_drill_items(natural_patterns: list[dict], next_expression_candidates:
             }
         )
     else:
-        fallback = source_items[0]["phrase"] if source_items else "set aside"
+        fallback = source_items[0]["display_phrase"] if source_items else "set aside"
         drills.append(
             {
                 "question": f"言い換え: 「I want to use {fallback}.」を、より自然で会話的な一文に言い換える。",
@@ -670,7 +680,7 @@ def _build_drill_items(natural_patterns: list[dict], next_expression_candidates:
         )
 
     while len(drills) < 5:
-        fallback = source_items[0]["phrase"] if source_items else "set aside"
+        fallback = source_items[0]["display_phrase"] if source_items else "set aside"
         drills.append(
             {
                 "question": f"穴埋め: I'm trying to ____ this phrase in conversation.",
@@ -817,6 +827,48 @@ def _looks_like_low_value_phrase(value: str) -> bool:
     return False
 
 
+def _core_expression_display(value: str) -> str:
+    text = " ".join((value or "").strip().split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    pattern_map = [
+        (r"\blooking forward to\b", "looking forward to ~"),
+        (r"\bas long as\b", "as long as ..."),
+        (r"\bremind me of\b", "remind me of ~"),
+        (r"\btake it one step at a time\b", "take it one step at a time"),
+        (r"\bstumble upon\b", "stumble upon ~"),
+        (r"\bstay hydrated\b", "stay hydrated"),
+        (r"\bslip .+? into .+?\b", "slip ~ into ..."),
+        (r"\bscope out\b", "scope out ~"),
+        (r"\bwork .+? into\b", "work ~ into ..."),
+    ]
+    for pattern, label in pattern_map:
+        if re.search(pattern, lowered):
+            return label
+    deserve_match = re.search(r"\bdeserve\b\s+(.+)", text, flags=re.IGNORECASE)
+    if deserve_match:
+        tail = deserve_match.group(1).strip(" .!?")
+        if tail:
+            return f"deserve {tail}"
+    if re.match(r"^(I|I'm|I’d|I'd|I will|I'll)\b", text):
+        trimmed = re.sub(r"^(I|I'm|I’d|I'd|I will|I'll)\s+", "", text, count=1)
+        if 2 <= len(trimmed.split()) <= 6:
+            return trimmed.strip(" .!?")
+    return text.strip(" .!?")
+
+
+def _growth_skill_label(display_phrase: str, meanings: list[str]) -> str:
+    if meanings:
+        return meanings[0]
+    normalized = normalize_phrase(display_phrase)
+    if "~" in display_phrase or "..." in display_phrase:
+        return "フレーズを文の型として安定して使えるようになってきた"
+    if len(normalized.split()) >= 2:
+        return "複数語表現を会話の中で自然につなげられている"
+    return "表現の使い分けが安定してきた"
+
+
 def _higher_priority(current: str, candidate: str) -> str:
     priority_rank = {"High": 3, "Medium": 2, "Low": 1}
     return candidate if priority_rank.get(candidate, 0) > priority_rank.get(current, 0) else current
@@ -840,9 +892,8 @@ def _format_growth_lines(items: list[dict], period_label: str) -> str:
             repeated = " 繰り返し出ている強みです。" if item["count"] >= 2 else ""
             lines.append(f"- {item['label']} (Good points {item['count']}回){repeated}")
             continue
-        meaning = f" - {item['meanings'][0]}" if item.get("meanings") else ""
         lines.append(
-            f"- {item['label']}{meaning} (status: {item['review_status']}, source: {item.get('source') or 'n/a'}, {item['count']}回登場)"
+            f"- 「{item['label']}」が定着寄りです。{item['skill_label']} (status: {item['review_status']}, source: {item.get('source') or 'n/a'}, {item['count']}回登場)"
         )
     return "\n".join(lines[:5])
 
@@ -877,7 +928,7 @@ def _format_next_expression_lines(items: list[dict], include_status: bool = True
         meaning = f" - {item['meanings'][0]}" if item.get("meanings") else ""
         status = f", status: {item['review_status']}" if include_status else ""
         lines.append(
-            f"- {item['phrase']}{meaning} (source: {item.get('source') or 'n/a'}, priority: {item.get('highest_priority') or 'n/a'}{status})"
+            f"- {item.get('display_phrase') or item['phrase']}{meaning} (source: {item.get('source') or 'n/a'}, priority: {item.get('highest_priority') or 'n/a'}{status})"
         )
     return "\n".join(lines[:10])
 
@@ -926,7 +977,7 @@ def _format_phrase_list(items: list[dict], detail_key: str) -> str:
         meaning = ""
         if item.get("meanings"):
             meaning = f" - {item['meanings'][0]}"
-        lines.append(f"- {item.get('phrase', '')}{meaning}{suffix}")
+        lines.append(f"- {item.get('display_phrase') or item.get('phrase', '')}{meaning}{suffix}")
     return "\n".join(lines)
 
 

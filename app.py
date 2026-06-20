@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from html import escape
+
+import pandas as pd
 import streamlit as st
 
 from src.analytics import (
@@ -21,6 +24,39 @@ from src.llm_summary import generate_period_summary
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
 
+TABLE_STYLE = """
+<style>
+.learning-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-top: 0.25rem;
+}
+.learning-table th,
+.learning-table td {
+  padding: 0.75rem 0.9rem;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid rgba(250, 250, 250, 0.08);
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+.learning-table th {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+}
+.learning-table tbody tr:nth-child(odd) td {
+  background: rgba(255, 255, 255, 0.035);
+}
+.learning-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.065);
+}
+</style>
+"""
+
 
 @st.cache_data(show_spinner=False)
 def cached_load_reviews(refresh: bool):
@@ -34,6 +70,7 @@ def cached_period_summary(summary, reviews, period_type: str):
 
 def main() -> None:
     st.title("English Review Analytics")
+    st.markdown(TABLE_STYLE, unsafe_allow_html=True)
 
     with st.sidebar:
         st.header("Data")
@@ -139,14 +176,34 @@ def render_improvement_focus(reviews: list) -> None:
     if weak_points_df.empty:
         st.caption("この期間には weak points の記録はまだありません。")
     else:
-        st.dataframe(weak_points_df[["weak_point"]], width="stretch", hide_index=True)
+        render_wrapped_table(weak_points_df[["weak_point"]])
 
     st.markdown("#### More Natural Expressions")
     more_natural_df = more_natural_expressions_to_dataframe(reviews)
     if more_natural_df.empty:
         st.caption("この期間には more natural expressions の記録はまだありません。")
     else:
-        st.dataframe(more_natural_df, width="stretch", hide_index=True)
+        render_wrapped_table(more_natural_df)
+
+
+def render_wrapped_table(df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    headers = "".join(f"<th>{escape(str(column))}</th>" for column in df.columns)
+    rows: list[str] = []
+    for _, row in df.fillna("").iterrows():
+        cells = "".join(
+            f"<td>{escape(str(value)).replace(chr(10), '<br>')}</td>"
+            for value in row.tolist()
+        )
+        rows.append(f"<tr>{cells}</tr>")
+    table_html = (
+        "<table class='learning-table'>"
+        f"<thead><tr>{headers}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
 def resolve_cache_event(loaded_at: str, refresh: bool) -> str:
     signature = str(refresh)
