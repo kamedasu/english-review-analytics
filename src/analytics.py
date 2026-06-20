@@ -137,11 +137,14 @@ def weak_points_to_dataframe(reviews: list[Review]) -> pd.DataFrame:
     rows = [
         {
             "weak_point": item["weak_point"],
-            "occurrence_count": item["occurrence_count"],
         }
-        for item in grouped.values()
+        for item in sorted(
+            grouped.values(),
+            key=lambda item: (item["occurrence_count"], item["weak_point"]),
+            reverse=True,
+        )
     ]
-    return pd.DataFrame(sorted(rows, key=lambda row: (row["occurrence_count"], row["weak_point"]), reverse=True))
+    return pd.DataFrame(rows)
 
 
 def more_natural_expressions_to_dataframe(reviews: list[Review]) -> pd.DataFrame:

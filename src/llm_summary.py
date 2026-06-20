@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import json
+import re
 import time
 
 import requests
@@ -211,9 +212,9 @@ def _build_summary_prompt(summary: StudySummary, reviews: list[Review], period_t
         "- 弱点: weak_points の繰り返し傾向、more_natural_expressions の修正傾向、confirmed で何度も出る未定着 phrase を統合してまとめる。\n"
         "- 次に増やすべき表現: phrase_cards から今の学習者にとって伸びしろが大きい未定着表現を10件まで選ぶ。Strong や十分定着済みの表現は外す。\n"
         "- 次回以降の学習テーマ: 抽象的なテーマではなく、次回会話で実行するミッション形式にする。\n"
-        "- 再利用成功フレーズ Top 5: learning_context.top_reused_phrases を優先し、reused_countを添える。\n"
-        "- まだ使えていない表現 Top 5: learning_context.unused_expression_candidates を優先する。\n"
-        "- 1分復習ドリル: 日本語→英語、穴埋め、言い換えを合計3問だけ出し、各問題に Answer と可能なら Note を付ける。\n"
+        "- 再利用成功フレーズ Top 5: phrase_cards ベースで、confirmed / recommended、句動詞、コロケーション、複数語フレーズ、High / Medium priority を優先する。固有名詞や単純語は避ける。十分に良い候補が少ない場合は無理に5件埋めない。\n"
+        "- まだ使えていない表現 Top 5: phrase_cards ベースで、学習価値の高い未定着表現を優先し、単純語や固有名詞は避ける。\n"
+        "- 1分復習ドリル: 合計5問。日本語→英語2問、穴埋め2問、言い換え1問を基本にし、問題と回答を明確に分ける。\n"
         "全体は箇条書き中心で、長くなりすぎないようにしてください。\n\n"
         f"データ:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -342,6 +343,7 @@ def _phrase_stat_for_prompt(item: dict, example_limit: int) -> dict:
         "status_counts": item["status_counts"],
         "highest_priority": item["highest_priority"],
         "is_learning_target": item["is_learning_target"],
+        "learning_value_score": item["learning_value_score"],
     }
     if item["meanings"]:
         data["meanings"] = item["meanings"][:example_limit]
@@ -409,7 +411,14 @@ def _build_phrase_learning_stats(reviews: list[Review], retention: list[ReviewTa
         inferred_status = retention_item.review_status if retention_item else ""
         resolved_status = explicit_status or inferred_status or "New"
         status_rank = _review_status_rank(resolved_status)
-        is_learning_target = status_rank < _review_status_rank("Strong")
+        learning_value_score = _learning_value_score(
+            phrase=item["phrase"],
+            primary_source=primary_source,
+            highest_priority=item["highest_priority"],
+            resolved_status=resolved_status,
+            occurrence_count=item["occurrence_count"],
+        )
+        is_learning_target = status_rank < _review_status_rank("Strong") and learning_value_score > 0
         results.append(
             {
                 "phrase": item["phrase"],
@@ -425,6 +434,7 @@ def _build_phrase_learning_stats(reviews: list[Review], retention: list[ReviewTa
                 "retention_status": inferred_status or resolved_status,
                 "matched_fields": retention_item.matched_fields if retention_item else [],
                 "is_learning_target": is_learning_target,
+                "learning_value_score": learning_value_score,
                 "needs_review": _needs_review(item, retention_item, resolved_status),
             }
         )
@@ -434,6 +444,7 @@ def _build_phrase_learning_stats(reviews: list[Review], retention: list[ReviewTa
         results,
         key=lambda item: (
             item["reused_count"],
+            item["learning_value_score"],
             _review_status_rank(item["review_status"]),
             priority_rank.get(item["highest_priority"], 0),
             item["occurrence_count"],
@@ -559,6 +570,7 @@ def _next_expression_candidates(phrase_stats: list[dict]) -> list[dict]:
     return sorted(
         candidates,
         key=lambda item: (
+            item["learning_value_score"],
             2 if item["primary_source"] == "confirmed" else 1 if item["primary_source"] == "recommended" else 0,
             priority_rank.get(item["highest_priority"], 0),
             1 if item["review_status"] == "New" else 0,
@@ -570,11 +582,25 @@ def _next_expression_candidates(phrase_stats: list[dict]) -> list[dict]:
 
 
 def _top_reused_phrase_stats(phrase_stats: list[dict]) -> list[dict]:
-    return [
+    candidates = [
         item
         for item in phrase_stats
-        if item["reused_count"] > 0 or _review_status_rank(item["review_status"]) >= _review_status_rank("Retained")
+        if item["learning_value_score"] > 0
+        and (
+            item["reused_count"] > 0 or _review_status_rank(item["review_status"]) >= _review_status_rank("Retained")
+        )
     ]
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item["learning_value_score"],
+            item["reused_count"],
+            _review_status_rank(item["review_status"]),
+            item["occurrence_count"],
+            item["phrase"].lower(),
+        ),
+        reverse=True,
+    )
 
 
 def _learning_themes(weak_points: list[dict], natural_patterns: list[dict], next_expression_candidates: list[dict]) -> list[str]:
@@ -593,28 +619,34 @@ def _learning_themes(weak_points: list[dict], natural_patterns: list[dict], next
 
 def _build_drill_items(natural_patterns: list[dict], next_expression_candidates: list[dict], phrase_stats: list[dict]) -> list[dict]:
     drills: list[dict] = []
-    if next_expression_candidates:
-        item = next_expression_candidates[0]
+    candidates = next_expression_candidates[:4]
+    fallback_candidates = [item for item in phrase_stats if item["learning_value_score"] > 0][:4]
+    source_items = candidates or fallback_candidates
+
+    for item in source_items[:2]:
         phrase = item["phrase"]
-        meaning = item["meanings"][0] if item["meanings"] else ""
-        example = item["examples"][0] if item["examples"] else f"I want to {phrase} in our next conversation."
+        meaning = item["meanings"][0] if item["meanings"] else "短い一文で言える形から固定する。"
         drills.append(
             {
-                "question": f"Q: 日本語→英語: 「次回の会話では {phrase} を自然に使いたい」を英語で言う。",
-                "answer": f"Answer: I want to use {phrase} naturally in our next conversation.",
-                "note": f"Note: {meaning}" if meaning else f"Note: まずは短い一文で使える形を覚える。例: {example}",
+                "question": f"日本語→英語: 「次回の会話で {phrase} を自然に使いたい」を英語で言う。",
+                "answer": f"I want to use {phrase} naturally in our next conversation.",
+                "note": meaning,
             }
         )
-    if phrase_stats:
-        stable = next((item for item in phrase_stats if item["examples"]), None)
-        phrase = stable["phrase"] if stable else "set aside"
+
+    fill_items = source_items[2:4] if len(source_items) >= 4 else source_items[:2]
+    for item in fill_items[:2]:
+        phrase = item["phrase"]
+        example = item["examples"][0] if item["examples"] else f"I want to {phrase} after work."
+        sentence = example.replace(phrase, "____", 1) if phrase in example else f"I want to ____ using {phrase}."
         drills.append(
             {
-                "question": f"Q: 穴埋め: I want to ____ some time after work.",
-                "answer": f"Answer: {phrase}",
-                "note": "Note: フレーズ全体で覚え、前後を自分の話題に差し替える。",
+                "question": f"穴埋め: {sentence}",
+                "answer": phrase,
+                "note": "フレーズをかたまりで入れる。",
             }
         )
+
     if natural_patterns:
         example = natural_patterns[0]["examples"][0] if natural_patterns[0]["examples"] else {}
         your_phrase = example.get("your_phrase", "My expression")
@@ -622,12 +654,32 @@ def _build_drill_items(natural_patterns: list[dict], next_expression_candidates:
         note = example.get("note", natural_patterns[0]["pattern"])
         drills.append(
             {
-                "question": f"Q: 言い換え: 「{your_phrase}」をもっと自然に言い直す。",
-                "answer": f"Answer: {more_natural}",
-                "note": f"Note: {note}",
+                "question": f"言い換え: 「{your_phrase}」をもっと自然に言い直す。",
+                "answer": more_natural,
+                "note": note,
             }
         )
-    return drills[:3]
+    else:
+        fallback = source_items[0]["phrase"] if source_items else "set aside"
+        drills.append(
+            {
+                "question": f"言い換え: 「I want to use {fallback}.」を、より自然で会話的な一文に言い換える。",
+                "answer": f"I'd like to work {fallback} into the conversation naturally.",
+                "note": "少し会話的なトーンにする。",
+            }
+        )
+
+    while len(drills) < 5:
+        fallback = source_items[0]["phrase"] if source_items else "set aside"
+        drills.append(
+            {
+                "question": f"穴埋め: I'm trying to ____ this phrase in conversation.",
+                "answer": fallback,
+                "note": "未定着表現を実戦で使う意識を持つ。",
+            }
+        )
+
+    return drills[:5]
 
 
 def _normalize_source(value: str) -> str:
@@ -669,6 +721,100 @@ def _needs_review(item: dict, retention_item: ReviewTargetSummary | None, resolv
     if retention_item and "actually_used" not in retention_item.matched_fields:
         return True
     return item["occurrence_count"] <= 2
+
+
+def _learning_value_score(
+    phrase: str,
+    primary_source: str,
+    highest_priority: str,
+    resolved_status: str,
+    occurrence_count: int,
+) -> int:
+    score = 0
+    text = (phrase or "").strip()
+    normalized = normalize_phrase(text)
+    if not normalized:
+        return 0
+    word_count = len([part for part in normalized.split(" ") if part])
+
+    if primary_source == "confirmed":
+        score += 4
+    elif primary_source == "recommended":
+        score += 3
+
+    if highest_priority == "High":
+        score += 3
+    elif highest_priority == "Medium":
+        score += 2
+
+    if resolved_status in {"Reused", "Retained", "Strong"}:
+        score += 2
+
+    if word_count >= 2:
+        score += 4
+    elif re.search(r"\b(?:up|out|off|on|in|over|away|back|through|around)\b", normalized):
+        score += 2
+    else:
+        score -= 2
+
+    if occurrence_count >= 2:
+        score += 1
+
+    if _looks_like_low_value_phrase(text):
+        score -= 8
+
+    return score
+
+
+def _looks_like_low_value_phrase(value: str) -> bool:
+    text = (value or "").strip()
+    normalized = normalize_phrase(text)
+    if not normalized:
+        return True
+    parts = [part for part in normalized.split(" ") if part]
+    if len(parts) == 1:
+        token = parts[0]
+        if token in {
+            "dinner",
+            "lunch",
+            "breakfast",
+            "tokyo",
+            "yoga",
+            "japan",
+            "cafe",
+            "coffee",
+            "work",
+            "school",
+            "food",
+            "movie",
+            "music",
+            "friend",
+            "family",
+            "weekend",
+            "today",
+            "tomorrow",
+        }:
+            return True
+        if len(token) <= 3:
+            return True
+    if len(parts) == 2 and parts[0] in {"the", "a", "an"} and parts[1] in {
+        "fans",
+        "audience",
+        "movie",
+        "music",
+        "food",
+        "friend",
+        "family",
+        "coffee",
+        "dinner",
+        "lunch",
+    }:
+        return True
+    if re.fullmatch(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*", text):
+        return True
+    if re.fullmatch(r"[A-Z]{2,}(?:\s+[A-Z]{2,})*", text):
+        return True
+    return False
 
 
 def _higher_priority(current: str, candidate: str) -> str:
@@ -744,10 +890,13 @@ def _format_learning_theme_lines(items: list[str]) -> str:
 
 def _format_drill_lines(items: list[dict]) -> str:
     if not items:
-        return "- Q: 今日の会話で使いたい表現を1つ選ぶ。\n- Answer: その表現を使った短文を1つ作る。\n- Note: 強い表現より未定着の表現を優先する。"
+        return "- 問題1: 今日の会話で使いたい表現を1つ選ぶ。\n- 回答1: その表現を使った短文を1つ作る。\n- Note1: 強い表現より未定着の表現を優先する。"
     lines: list[str] = []
-    for item in items:
-        lines.extend([f"- {item['question']}", f"- {item['answer']}", f"- {item['note']}"])
+    for index, item in enumerate(items[:5], start=1):
+        lines.append(f"- 問題{index}: {item['question']}")
+        lines.append(f"- 回答{index}: {item['answer']}")
+        if item.get("note"):
+            lines.append(f"- Note{index}: {item['note']}")
     return "\n".join(lines)
 
 

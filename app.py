@@ -139,7 +139,7 @@ def render_improvement_focus(reviews: list) -> None:
     if weak_points_df.empty:
         st.caption("この期間には weak points の記録はまだありません。")
     else:
-        st.dataframe(weak_points_df, width="stretch", hide_index=True)
+        st.dataframe(weak_points_df[["weak_point"]], width="stretch", hide_index=True)
 
     st.markdown("#### More Natural Expressions")
     more_natural_df = more_natural_expressions_to_dataframe(reviews)
