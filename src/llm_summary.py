@@ -41,8 +41,8 @@ def generate_rule_based_summary(summary: StudySummary, reviews: list[Review], pe
 
     growth_lines = _format_growth_lines(context["growth_highlights"], period_label)
     weakness_lines = _format_weakness_lines(context["weakness_highlights"])
+    mistake_focus_lines = _format_mistake_focus_lines(context["mistake_focus_highlights"])
     next_expression_lines = _format_next_expression_lines(context["next_expression_candidates"][:10])
-    reused_lines = _format_phrase_list(context["top_reused_phrases"], "reused_count")
     unused_lines = _format_next_expression_lines(context["unused_expression_candidates"][:5], include_status=False)
     theme_lines = _format_learning_theme_lines(context["learning_themes"])
     drill_lines = _format_drill_lines(context["drill_items"])
@@ -54,12 +54,12 @@ def generate_rule_based_summary(summary: StudySummary, reviews: list[Review], pe
         f"{growth_lines}\n\n"
         f"## {period_prefix}の弱点\n"
         f"{weakness_lines}\n\n"
+        f"## {period_prefix}の重点ミス修正 Top 5\n"
+        f"{mistake_focus_lines}\n\n"
         "## 次に増やすべき表現\n"
         f"{next_expression_lines}\n\n"
         "## 次回以降の学習テーマ\n"
         f"{theme_lines}\n\n"
-        f"## {period_prefix}の再利用成功フレーズ Top 5\n"
-        f"{reused_lines}\n\n"
         "## まだ使えていない表現 Top 5\n"
         f"{unused_lines}\n\n"
         "## 1分復習ドリル\n"
@@ -201,18 +201,18 @@ def _build_summary_prompt(summary: StudySummary, reviews: list[Review], period_t
         "必ず次の見出しをこの順番で含めてください。\n"
         f"## {period_prefix}の成長ポイント\n"
         f"## {period_prefix}の弱点\n"
+        f"## {period_prefix}の重点ミス修正 Top 5\n"
         "## 次に増やすべき表現\n"
         "## 次回以降の学習テーマ\n"
-        f"## {period_prefix}の再利用成功フレーズ Top 5\n"
         "## まだ使えていない表現 Top 5\n"
         "## 1分復習ドリル\n\n"
         "入力データは全文レビューではなく、summary生成用に要約済みのコンテキストです。\n"
         "各見出しの要件:\n"
         f"- {period_prefix}の成長ポイント: good_points の繰り返し傾向と、Retained / Strong に寄っている phrase や繰り返し出てきた confirmed phrase を優先してまとめる。\n"
         "- 弱点: weak_points の繰り返し傾向、more_natural_expressions の修正傾向、confirmed で何度も出る未定着 phrase を統合してまとめる。\n"
+        f"- {period_prefix}の重点ミス修正 Top 5: weak_points、more_natural_expressions、confirmed phrase の繰り返しから、今期よく出たミスの種類を短い見出し + 補足説明で最大5件まとめる。\n"
         "- 次に増やすべき表現: phrase_cards から今の学習者にとって伸びしろが大きい未定着表現を10件まで選ぶ。Strong や十分定着済みの表現は外す。\n"
         "- 次回以降の学習テーマ: 抽象的なテーマではなく、次回会話で実行するミッション形式にする。\n"
-        "- 再利用成功フレーズ Top 5: phrase_cards ベースで、confirmed / recommended、句動詞、コロケーション、複数語フレーズ、High / Medium priority を優先する。固有名詞や単純語は避ける。十分に良い候補が少ない場合は無理に5件埋めない。\n"
         "- まだ使えていない表現 Top 5: phrase_cards ベースで、学習価値の高い未定着表現を優先し、単純語や固有名詞は避ける。\n"
         "- 1分復習ドリル: 合計5問。日本語→英語2問、穴埋め2問、言い換え1問を基本にし、問題と回答を明確に分ける。\n"
         "全体は箇条書き中心で、長くなりすぎないようにしてください。\n\n"
@@ -260,10 +260,6 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
         for phrase in (getattr(review, "words_and_phrases_actually_used", []) or [])
     )
     next_expression_candidates = _next_expression_candidates(phrase_stats)
-    top_reused = [
-        _phrase_stat_for_prompt(item, example_limit)
-        for item in _top_reused_phrase_stats(phrase_stats)[:5]
-    ]
     unused = [
         _phrase_stat_for_prompt(item, example_limit)
         for item in next_expression_candidates
@@ -271,13 +267,13 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
     ][:5]
 
     return {
-        "top_reused_phrases": top_reused,
         "unused_expression_candidates": unused,
         "good_points": good_points[:limit],
         "weak_points": weak_points[:limit],
         "more_natural_examples": natural_patterns[:limit],
         "growth_highlights": _growth_highlights(good_points, phrase_stats, limit, example_limit),
         "weakness_highlights": _weakness_highlights(weak_points, natural_patterns, phrase_stats, limit, example_limit),
+        "mistake_focus_highlights": _mistake_focus_highlights(weak_points, natural_patterns, phrase_stats, limit),
         "next_expression_candidates": [_phrase_stat_for_prompt(item, example_limit) for item in next_expression_candidates[:10]],
         "learning_themes": _learning_themes(weak_points, natural_patterns, next_expression_candidates),
         "drill_items": _build_drill_items(natural_patterns, next_expression_candidates, phrase_stats),
@@ -286,9 +282,9 @@ def _summary_learning_context(reviews: list[Review], period_type: str) -> dict:
         "topics": topics[:5],
         "actually_used_top": actual_used[:5],
         "context_limits": {
-            "top_reused_phrases": 5,
             "unused_expression_candidates": 5,
             "next_expression_candidates": 10,
+            "mistake_focus_highlights": 5,
             "weak_points": limit,
             "more_natural_examples": limit,
             "phrase_learning_stats": phrase_limit,
@@ -570,6 +566,46 @@ def _weakness_highlights(
     return highlights[: limit + 2]
 
 
+def _mistake_focus_highlights(
+    weak_points: list[dict],
+    natural_patterns: list[dict],
+    phrase_stats: list[dict],
+    limit: int,
+) -> list[dict]:
+    grouped: dict[str, dict] = {}
+
+    for item in weak_points[: limit + 2]:
+        title, detail = _mistake_focus_from_text(item["text"])
+        _add_mistake_focus_item(grouped, title, detail, item["count"], "weak_point")
+
+    for item in natural_patterns[: limit + 2]:
+        title, detail = _mistake_focus_from_natural_pattern(item)
+        _add_mistake_focus_item(grouped, title, detail, item["count"], "more_natural")
+
+    repeated_confirmed = [
+        item
+        for item in phrase_stats
+        if item["primary_source"] == "confirmed"
+        and item["occurrence_count"] >= 2
+        and _review_status_rank(item["review_status"]) < _review_status_rank("Retained")
+    ]
+    for item in repeated_confirmed[: limit + 2]:
+        title, detail = _mistake_focus_from_phrase_stat(item)
+        _add_mistake_focus_item(grouped, title, detail, item["occurrence_count"], "confirmed_phrase")
+
+    return sorted(
+        [
+            {
+                **item,
+                "source_types": sorted(item["source_types"]),
+            }
+            for item in grouped.values()
+        ],
+        key=lambda item: (item["count"], item["title"]),
+        reverse=True,
+    )[:5]
+
+
 def _next_expression_candidates(phrase_stats: list[dict]) -> list[dict]:
     priority_rank = {"High": 3, "Medium": 2, "Low": 1}
     candidates = [item for item in phrase_stats if item["is_learning_target"] and item["needs_review"]]
@@ -607,6 +643,75 @@ def _top_reused_phrase_stats(phrase_stats: list[dict]) -> list[dict]:
         ),
         reverse=True,
     )
+
+
+def _add_mistake_focus_item(
+    grouped: dict[str, dict],
+    title: str,
+    detail: str,
+    count: int,
+    source_type: str,
+) -> None:
+    key = normalize_phrase(title)
+    if not key:
+        return
+    if key not in grouped:
+        grouped[key] = {
+            "title": title,
+            "detail": detail,
+            "count": 0,
+            "source_types": set(),
+        }
+    grouped[key]["count"] += max(count, 1)
+    grouped[key]["source_types"].add(source_type)
+    if detail and len(detail) > len(grouped[key]["detail"]):
+        grouped[key]["detail"] = detail
+
+
+def _mistake_focus_from_text(text: str) -> tuple[str, str]:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ["preposition", "前置詞", "for / to", "in front of", "before"]):
+        return "前置詞の選び分け", f"{text} といった形で、前置詞の細かい使い分けで迷いやすい。"
+    if any(token in lowered for token in ["語順", "word order", "rather", "looking forward to see"]):
+        return "語順の不安定さ", f"{text} のように、定型表現や長めの文で語順が崩れやすい。"
+    if any(token in lowered for token in ["fixed phrase", "phrase", "コロケーション", "collocation"]):
+        return "fixed phrase の崩れ", f"{text} のように、語は合っていてもまとまりとして不自然になりやすい。"
+    if any(token in lowered for token in ["true", "truly", "natural", "naturally"]):
+        return "似た語の使い分け", f"{text} のように、似た品詞や形の語を混同しやすい。"
+    if any(token in lowered for token in ["long", "長め", "情報", "2〜3文", "2-3"]):
+        return "長い文での情報整理", f"{text} のように、情報を詰め込むと文全体が不安定になりやすい。"
+    return "繰り返し出た弱点", f"{text} が今期の継続的な修正ポイントとして見えている。"
+
+
+def _mistake_focus_from_natural_pattern(item: dict) -> tuple[str, str]:
+    label = item.get("pattern", "")
+    lowered = label.lower()
+    example = item.get("examples", [{}])[0] if item.get("examples") else {}
+    your_phrase = example.get("your_phrase", "")
+    more_natural = example.get("more_natural", "")
+    if any(token in lowered for token in ["preposition", "for / to", "in front of", "before"]):
+        return "前置詞の選び分け", f"{your_phrase} -> {more_natural} のように、前置詞で意味や自然さがずれやすい。"
+    if any(token in lowered for token in ["word order", "語順", "rather"]):
+        return "語順の不安定さ", f"{your_phrase} -> {more_natural} のように、定型表現の語順を整える必要がある。"
+    if any(token in lowered for token in ["natural", "naturally", "true", "truly"]):
+        return "似た語の使い分け", f"{your_phrase} -> {more_natural} のように、近い語形の選択で不自然さが出やすい。"
+    if any(token in lowered for token in ["collocation", "fixed phrase", "ネイティブ会話"]):
+        return "コロケーションの自然さ", f"{your_phrase} -> {more_natural} のように、単語の組み合わせを自然な形に寄せたい。"
+    return "言い換えの自然さ", f"{your_phrase} -> {more_natural} のような修正が今期に繰り返し出ている。"
+
+
+def _mistake_focus_from_phrase_stat(item: dict) -> tuple[str, str]:
+    phrase = item.get("display_phrase") or item.get("phrase", "")
+    meaning = item.get("meanings", [])
+    detail = meaning[0] if meaning else "confirmed だが繰り返し迷っている表現。"
+    lowered = normalize_phrase(phrase)
+    if any(token in lowered for token in ["rather", "looking forward", "as long as"]):
+        return "fixed phrase の崩れ", f"「{phrase}」のような定型表現で、形を崩さず使う練習が必要。"
+    if any(token in lowered for token in ["true", "truly", "natural", "naturally"]):
+        return "似た語の使い分け", f"「{phrase}」周辺で、語形や品詞の選び分けを安定させたい。"
+    if "~" in phrase or "..." in phrase:
+        return "定型表現の安定化", f"「{phrase}」は confirmed だが、まだ安定して使い切れていない。"
+    return "繰り返し迷う confirmed 表現", f"「{phrase}」({detail}) が今期に複数回出ており、重点的に修正したい。"
 
 
 def _learning_themes(weak_points: list[dict], natural_patterns: list[dict], next_expression_candidates: list[dict]) -> list[str]:
@@ -918,6 +1023,15 @@ def _format_weakness_lines(items: list[dict]) -> str:
             f"- 繰り返し迷っている表現: {item['label']}{meaning} ({item['count']}回, status: {item['review_status']})"
         )
     return "\n".join(lines[:6])
+
+
+def _format_mistake_focus_lines(items: list[dict]) -> str:
+    if not items:
+        return "- 今期に重点化すべきミス修正はまだ十分に記録されていません。"
+    lines: list[str] = []
+    for item in items[:5]:
+        lines.append(f"- {item['title']}: {item['detail']}")
+    return "\n".join(lines)
 
 
 def _format_next_expression_lines(items: list[dict], include_status: bool = True) -> str:
