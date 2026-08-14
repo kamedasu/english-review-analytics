@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: S3 storage for English Review Analytics
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: S3 bucket name for English Review Analytics
+
+Resources:
+  EnglishReviewBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+      VersioningConfiguration:
+        Status: Enabled
+
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  EnglishReviewUserPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Access policy for English Review Analytics S3 storage
+
+      Users:
+        - aws_ryota
+
+      PolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+          - Sid: ListBucket
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:aws:s3:::${BucketName}
+
+          - Sid: ReadWriteData
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub arn:aws:s3:::${BucketName}/data/*
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket
+    Value: !Ref EnglishReviewBucket
+
+  BucketArn:
+    Description: ARN of the S3 bucket
+    Value: !GetAtt EnglishReviewBucket.Arn
+
+  ManagedPolicyArn:
+    Description: ARN of the IAM managed policy
+    Value: !Ref EnglishReviewUserPolicy
