@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 import re
 
-from src.config import DATA_DIR, get_settings
+from src.config import get_settings
 from src.models import Review
 from src.notion_client import NotionClient, NotionClientError
 from src.notion_parser import parse_review, split_reviews
-from src.storage.local_store import load_reviews, save_reviews
+from src.storage import StorageError, get_storage
+from src.storage.base import Storage
 from src.storage.state_store import (
     has_processed_review,
-    load_state,
-    save_state,
     update_page_state,
     update_review_state,
 )
@@ -54,7 +52,10 @@ class LoadResult:
 
 
 def load_local_reviews() -> LoadResult:
-    reviews = sorted(load_reviews(), key=lambda review: review.date)
+    try:
+        reviews = sorted(_load_reviews(get_storage()), key=lambda review: review.date)
+    except (StorageError, ValueError) as exc:
+        return _storage_error_result(exc)
     messages = [f"ローカル保存済みデータを表示しています: {len(reviews)} reviews"]
     if not reviews:
         messages.append("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
@@ -73,16 +74,21 @@ def load_or_fetch_reviews(refresh: bool = False) -> LoadResult:
 def sync_active_reviews_from_notion() -> LoadResult:
     messages: list[str] = []
     settings = get_settings()
+    try:
+        storage = get_storage()
+        state = _load_state(storage)
+        cached_reviews = _load_reviews(storage)
+    except (StorageError, ValueError) as exc:
+        return _storage_error_result(exc, sync_requested=True)
 
     if not settings.notion_api_key:
         messages.append("NOTION_API_KEY が設定されていません。")
-    state = load_state()
     active_page_ids = _active_page_ids(settings, state, messages)
     if not active_page_ids and not messages:
         messages.append("NOTION_ACTIVE_PAGE_IDS または NOTION_PAGE_IDS が設定されていません。")
     if messages:
         return LoadResult(
-            reviews=sorted(load_reviews(), key=lambda review: review.date),
+            reviews=sorted(cached_reviews, key=lambda review: review.date),
             debug=LoadDebugInfo(
                 sync_requested=True,
                 page_statuses=[PageLoadStatus(page_id="", status="エラー", error="\n".join(messages))],
@@ -90,7 +96,6 @@ def sync_active_reviews_from_notion() -> LoadResult:
             ),
         )
 
-    cached_reviews = load_reviews()
     for review in cached_reviews:
         update_review_state(state, review)
     client = NotionClient(settings.notion_api_key)
@@ -107,7 +112,16 @@ def sync_active_reviews_from_notion() -> LoadResult:
             continue
 
         page_hash = content_hash(page.markdown)
-        raw_markdown_path = _save_raw_markdown(page.page_id, page.title, page.markdown)
+        try:
+            raw_markdown_path = _save_raw_markdown(storage, page.page_id, page.title, page.markdown)
+        except StorageError as exc:
+            error = str(exc)
+            messages.append(error)
+            page_statuses.append(PageLoadStatus(page_id=page.page_id, title=page.title, status="エラー", error=error))
+            return LoadResult(
+                reviews=sorted(cached_reviews, key=lambda review: review.date),
+                debug=LoadDebugInfo(sync_requested=True, page_statuses=page_statuses, messages=messages),
+            )
         parser_warnings: list[str] = []
         sync_result = _sync_page_reviews(
             page_id=page.page_id,
@@ -140,8 +154,13 @@ def sync_active_reviews_from_notion() -> LoadResult:
             )
         )
 
-    save_reviews(all_reviews)
-    save_state(state)
+    # Save state last: a failed raw/processed write must never mark a sync as complete.
+    try:
+        _save_reviews(storage, all_reviews)
+        _save_state(storage, state)
+    except StorageError as exc:
+        messages.append(str(exc))
+        page_statuses.append(PageLoadStatus(page_id="", status="エラー", error=str(exc)))
 
     if not all_reviews:
         messages.append("レビューを取得できませんでした。サイドバーの取得メッセージとdata/raw/を確認してください。")
@@ -287,11 +306,46 @@ def _month_from_title_or_reviews(title: str, reviews: list[Review], page_id: str
     return ""
 
 
-def _save_raw_markdown(page_id: str, title: str, markdown: str) -> Path:
-    path = DATA_DIR / "raw" / f"{_safe_filename(title or page_id)}_{page_id}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(markdown, encoding="utf-8")
+def _save_raw_markdown(storage: Storage, page_id: str, title: str, markdown: str) -> str:
+    path = f"raw/{_safe_filename(title or page_id)}_{page_id}.md"
+    storage.save_text(path, markdown)
     return path
+
+
+def _load_reviews(storage: Storage) -> list[Review]:
+    path = "processed/reviews.json"
+    if not storage.exists(path):
+        return []
+    return [Review.model_validate(item) for item in storage.load_json(path)]
+
+
+def _save_reviews(storage: Storage, reviews: list[Review]) -> None:
+    storage.save_json("processed/reviews.json", [review.model_dump(mode="json") for review in reviews])
+
+
+def _load_state(storage: Storage):
+    from src.models import FetchState
+
+    path = "state/state.json"
+    if not storage.exists(path):
+        return FetchState()
+    return FetchState.model_validate(storage.load_json(path))
+
+
+def _save_state(storage: Storage, state) -> None:
+    storage.save_json("state/state.json", state.model_dump(mode="json"))
+
+
+def _storage_error_result(exc: Exception, sync_requested: bool = False) -> LoadResult:
+    message = f"保存先を読み込めませんでした: {exc}"
+    return LoadResult(
+        reviews=[],
+        debug=LoadDebugInfo(
+            sync_requested=sync_requested,
+            page_statuses=[PageLoadStatus(page_id="", status="エラー", error=message)],
+            messages=[message],
+        ),
+    )
 
 
 def _safe_filename(value: str) -> str:

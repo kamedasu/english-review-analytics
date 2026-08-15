@@ -89,6 +89,32 @@ DATA_ROOT_DIR=/Users/you/Library/Mobile Documents/com~apple~CloudDocs/english-re
 
 指定したディレクトリ配下に `raw/`, `processed/`, `state/` を作って使います。iCloud Drive や Google Drive の同期フォルダを指定すると、ローカル保存済みデータを複数環境で共有しやすくなります。
 
+## 保存モード
+
+保存先は `STORAGE_MODE` で切り替えます。未指定時と `local` は従来どおり `DATA_ROOT_DIR`（未指定ならプロジェクト直下の `data/`）を使います。
+
+```env
+STORAGE_MODE=local
+```
+
+S3はオプションです。S3モードでは、ローカルの `raw/`, `processed/`, `state/` と同じ相対構造を `s3://<S3_BUCKET>/<S3_PREFIX>/` に保存します。
+
+```env
+STORAGE_MODE=s3
+S3_BUCKET=english-review-analytics-510437263254
+S3_PREFIX=data
+AWS_REGION=ap-northeast-1
+```
+
+AWS認証情報は `.env` には書かず、AWS CLI / boto3 の通常の認証チェーンを利用します。通常表示では保存済みデータだけを読み、Notion APIは呼びません。`Sync from Notion` 実行時だけactive月を同期し、archived月はlocal/S3を問わず保存済みデータだけを利用します。localとS3でアプリ機能の差はありません。
+
+ローカルの既存データを一度だけS3へコピーするには、以下を実行します。`sample_reviews.md` は対象外で、同じS3キーが既にある場合は上書きします。ローカルファイルは削除しません。
+
+```bash
+python scripts/migrate_local_to_s3.py --dry-run
+python scripts/migrate_local_to_s3.py
+```
+
 ## Active / Archived 月
 
 Notion API呼び出しを減らすため、月をactiveとarchivedに分けます。
