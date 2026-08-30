@@ -24,6 +24,10 @@ class Settings:
     openai_api_key: str
     openai_model: str
     openai_summary_retry_count: int
+    openai_embedding_model: str
+    rag_embedding_batch_size: int
+    rag_chroma_dir: Path
+    rag_collection_name: str
     storage_mode: str
     s3_bucket: str
     s3_prefix: str
@@ -43,6 +47,11 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         openai_summary_retry_count=_safe_int(os.getenv("OPENAI_SUMMARY_RETRY_COUNT", ""), default=3),
+        openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        rag_embedding_batch_size=_safe_positive_int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", ""), default=64),
+        rag_chroma_dir=_rag_chroma_dir(),
+        rag_collection_name=os.getenv("RAG_COLLECTION_NAME", "english_review_documents").strip()
+        or "english_review_documents",
         storage_mode=os.getenv("STORAGE_MODE", "local").strip().lower(),
         s3_bucket=os.getenv("S3_BUCKET", ""),
         s3_prefix=os.getenv("S3_PREFIX", "data").strip("/"),
@@ -62,3 +71,13 @@ def _safe_int(value: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_positive_int(value: str, default: int) -> int:
+    parsed = _safe_int(value, default)
+    return parsed if parsed > 0 else default
+
+
+def _rag_chroma_dir() -> Path:
+    configured = os.getenv("RAG_CHROMA_DIR", "").strip()
+    return Path(configured).expanduser() if configured else DATA_DIR / "chroma"

@@ -9,5 +9,6 @@ __pycache__/
 data/raw/
 data/processed/
 data/state/
+data/chroma/
 
 .streamlit/secrets.toml

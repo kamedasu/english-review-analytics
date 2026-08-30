@@ -15,7 +15,7 @@ Phase 2では、以下を追加しやすい土台を入れています。
 
 - `state.json` によるページ単位の差分取得
 - `local_store.py` / `s3_store.py` による保存先の分離
-- `rag/chunker.py` によるRAG向けチャンク化
+- `rag/document_builder.py` による意味単位のRAG Document生成
 - `llm_summary.py` による月次サマリー生成の差し替え口
 - `reuse_detector.py` による復習・再利用判定ロジックの分離
 
@@ -74,6 +74,10 @@ ARCHIVED_MONTHS=2026-04
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_SUMMARY_RETRY_COUNT=3
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_BATCH_SIZE=64
+RAG_CHROMA_DIR=
+RAG_COLLECTION_NAME=english_review_documents
 DATA_ROOT_DIR=
 ```
 
@@ -177,6 +181,16 @@ Summaryでは、単なる総評ではなく次回の会話で使える学習材�
 この集約により、`confirmed で何度も出てくる`、`recommended だがまだ未定着`、`Retained / Strong に寄ってきた` といった判定に加えて、`前置詞の選び分け`、`語順の不安定さ`、`fixed phrase の崩れ` などの重点ミス修正も summary に反映します。
 
 LLMにはレビュー全文をそのまま渡さず、summary生成用に要約済みのコンテキストを渡します。Monthlyはやや詳しめ、Quarterly / Yearlyは簡潔めに生成しますが、どの集計単位でも上記の成長・弱点・未定着表現の考え方を共通で使います。
+
+## RAG index（Phase 2）
+
+保存済みReviewから、Good Point / Weak Point / More Natural Expression / Phrase CardをChromaへ全件再構築できます。Notion同期やStreamlit UIからの自動実行は行いません。
+
+```bash
+python -m src.rag.indexer
+```
+
+Chromaはローカルの `RAG_CHROMA_DIR`（未指定時は `data/chroma`）へ保存される派生データで、Git管理対象外です。デフォルトcollection名は `english_review_documents` です。
 
 ## 起動
 
