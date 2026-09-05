@@ -243,6 +243,60 @@ class RagRetrieverTest(unittest.TestCase):
 
         self.assertEqual([result.document.metadata["type"] for result in results], ["phrase_card", "more_natural_expression"])
 
+    def test_month_range_is_hard_constraint_for_phrase_recommendations(self) -> None:
+        candidates = [
+            _source("august", "phrase_card", 0.40, "2026-08-01", "Phrase: August only"),
+            _source("july", "phrase_card", 0.01, "2026-07-07", "Phrase: outside"),
+            _source("may", "phrase_card", 0.02, "2026-05-08", "Phrase: outside too"),
+        ]
+        intent = RagQueryIntent("phrase_recommendation", 5, False, False, date(2026, 8, 1), date(2026, 8, 31))
+
+        results = _select_intent_documents(candidates, intent, k=5)
+
+        self.assertEqual([result.document.id for result in results], ["august"])
+
+    def test_relative_range_is_hard_constraint_after_duplicate_removal(self) -> None:
+        candidates = [
+            _source("in-range", "phrase_card", 0.40, "2026-08-23", "Phrase: current"),
+            _source("duplicate-outside", "phrase_card", 0.01, "2026-08-20", "Phrase: current"),
+            _source("outside", "more_natural_expression", 0.02, "2026-08-22", "More natural: outside"),
+        ]
+        intent = RagQueryIntent("phrase_recommendation", 5, True, False, date(2026, 8, 23), date(2026, 9, 5))
+
+        results = _select_intent_documents(candidates, intent, k=5)
+
+        self.assertEqual([result.document.id for result in results], ["in-range"])
+
+    def test_where_filter_does_not_bypass_an_explicit_date_constraint(self) -> None:
+        provider = FakeEmbeddingProvider()
+        store = _DateRangeQueryStore()
+
+        results = RagRetriever(provider, store).retrieve(
+            "2026年8月のフレーズ",
+            k=5,
+            where={"type": "phrase_card"},
+        )
+
+        self.assertEqual([result.document.id for result in results], ["august"])
+
+    def test_yearless_month_query_uses_the_hard_filter_retrieval_path(self) -> None:
+        results = RagRetriever(FakeEmbeddingProvider(), _MonthConstraintQueryStore()).retrieve(
+            "8月に習った内容でネイティブっぽい表現はどれ？",
+            k=5,
+        )
+
+        self.assertEqual([result.document.id for result in results], ["august"])
+        self.assertTrue(all(result.document.metadata["date"].startswith("2026-08") for result in results))
+
+    def test_numeric_relative_period_does_not_fallback_outside_its_hard_range(self) -> None:
+        results = RagRetriever(FakeEmbeddingProvider(), _RelativeConstraintQueryStore()).retrieve(
+            "最近2週間で習ったフレーズを5個教えて",
+            k=5,
+        )
+
+        self.assertEqual([result.document.id for result in results], ["latest", "in-range"])
+        self.assertTrue(all(result.document.metadata["date"] >= "2026-08-23" for result in results))
+
     def test_rejects_blank_query_and_non_positive_k_without_embedding(self) -> None:
         provider = FakeEmbeddingProvider()
         retriever = RagRetriever(provider, FakeQueryStore())
@@ -285,3 +339,44 @@ def _source(
         RagDocument(document_id, text or f"{document_type}: {document_id}", {"type": document_type, "date": document_date}),
         distance,
     )
+
+
+class _DateRangeQueryStore:
+    def query(self, query_embedding, k, where=None):
+        return {
+            "ids": [["august", "july"]],
+            "documents": [["Phrase: August", "Phrase: July"]],
+            "metadatas": [[
+                {"type": "phrase_card", "date": "2026-08-01"},
+                {"type": "phrase_card", "date": "2026-07-07"},
+            ]],
+            "distances": [[0.2, 0.1]],
+        }
+
+
+class _MonthConstraintQueryStore:
+    def query(self, query_embedding, k, where=None):
+        return {
+            "ids": [["august", "july", "may"]],
+            "documents": [["Phrase: August", "Phrase: July", "Phrase: May"]],
+            "metadatas": [[
+                {"type": "phrase_card", "date": "2026-08-01"},
+                {"type": "phrase_card", "date": "2026-07-07"},
+                {"type": "phrase_card", "date": "2026-05-08"},
+            ]],
+            "distances": [[0.3, 0.1, 0.2]],
+        }
+
+
+class _RelativeConstraintQueryStore:
+    def query(self, query_embedding, k, where=None):
+        return {
+            "ids": [["latest", "in-range", "outside"]],
+            "documents": [["Phrase: latest", "Phrase: in range", "Phrase: outside"]],
+            "metadatas": [[
+                {"type": "phrase_card", "date": "2026-09-05"},
+                {"type": "phrase_card", "date": "2026-08-23"},
+                {"type": "phrase_card", "date": "2026-08-22"},
+            ]],
+            "distances": [[0.3, 0.2, 0.1]],
+        }

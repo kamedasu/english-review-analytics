@@ -34,11 +34,28 @@ class RagQueryIntentTest(unittest.TestCase):
 
     def test_parses_yearless_japanese_and_english_months_from_index_reference_date(self) -> None:
         latest = date(2026, 8, 15)
-        for query in ("7月", "7月の中で", "7月中", "in July"):
+        for query in ("7月", "7月に習った内容", "7月に覚えたフレーズ", "7月の中で", "7月中", "in July"):
             intent = parse_rag_query(query, latest)
             self.assertEqual((intent.start_date, intent.end_date), (date(2026, 7, 1), date(2026, 7, 31)))
         december = parse_rag_query("12月", latest)
         self.assertEqual((december.start_date, december.end_date), (date(2025, 12, 1), date(2025, 12, 31)))
+
+    def test_parses_august_forms_as_the_same_hard_month_range(self) -> None:
+        latest = date(2026, 9, 5)
+        for query in ("8月", "8月に習った内容", "8月の中で", "2026年8月", "in August", "August 2026"):
+            intent = parse_rag_query(query, latest)
+            self.assertEqual((intent.start_date, intent.end_date), (date(2026, 8, 1), date(2026, 8, 31)))
+
+    def test_parses_numeric_relative_periods_as_hard_ranges(self) -> None:
+        latest = date(2026, 9, 5)
+        fortnight = (date(2026, 8, 23), date(2026, 9, 5))
+        for query in ("最近2週間", "直近2週間", "過去2週間", "最近14日", "last 2 weeks", "past 14 days"):
+            intent = parse_rag_query(query, latest)
+            self.assertEqual((intent.start_date, intent.end_date), fortnight)
+        self.assertEqual(
+            (parse_rag_query("過去30日", latest).start_date, parse_rag_query("過去30日", latest).end_date),
+            (date(2026, 8, 7), date(2026, 9, 5)),
+        )
 
     def test_parses_relative_months_from_index_reference_date(self) -> None:
         latest = date(2026, 8, 15)

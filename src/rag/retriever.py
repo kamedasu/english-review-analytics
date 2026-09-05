@@ -108,7 +108,7 @@ class RagRetriever:
         response = self._chroma_store.query(embeddings[0], candidate_k, where)
         results = _retrieved_documents(response)
         if where is not None:
-            return results[:k]
+            return _apply_hard_date_constraint(results, intent)[:k]
         if _is_expression_focused_query(clean_query):
             learning_candidates = _learning_type_candidates(self._chroma_store, embeddings[0], k)
             return _prioritize_expression_documents(results, learning_candidates, k)
@@ -147,13 +147,8 @@ def _select_intent_documents(
     if not unique_candidates:
         return []
 
-    if intent.start_date is not None and intent.end_date is not None:
-        in_range = [
-            candidate
-            for candidate in unique_candidates
-            if (candidate_date := _document_date(candidate)) is not None
-            and intent.start_date <= candidate_date <= intent.end_date
-        ]
+    if _has_hard_date_constraint(intent):
+        in_range = _apply_hard_date_constraint(unique_candidates, intent)
         return _sort_intent_documents(in_range, intent)[:k]
 
     if intent.recent:
@@ -164,6 +159,26 @@ def _select_intent_documents(
                 if len(filtered) >= k or window_days is None:
                     return _sort_intent_documents(filtered, intent)[:k]
     return _sort_intent_documents(unique_candidates, intent)[:k]
+
+
+def _has_hard_date_constraint(intent: RagQueryIntent) -> bool:
+    return intent.start_date is not None and intent.end_date is not None
+
+
+def _apply_hard_date_constraint(
+    candidates: list[RetrievedDocument],
+    intent: RagQueryIntent,
+) -> list[RetrievedDocument]:
+    """Never reintroduce out-of-range documents after an explicit date constraint."""
+    if not _has_hard_date_constraint(intent):
+        return candidates
+    assert intent.start_date is not None and intent.end_date is not None
+    return [
+        candidate
+        for candidate in candidates
+        if (candidate_date := _document_date(candidate)) is not None
+        and intent.start_date <= candidate_date <= intent.end_date
+    ]
 
 
 def _latest_index_document_date(chroma_store: QueryStore, query_embedding: list[float]) -> date | None:

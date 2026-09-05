@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from calendar import monthrange
 
 
@@ -71,6 +71,14 @@ def _date_range(query: str, reference_date: date | None) -> tuple[tuple[date, da
     if explicit is not None:
         return _month_range(*explicit), False
 
+    # A named month is more specific than any relative-period wording in the same query.
+    month = _yearless_month(query)
+    if month is not None:
+        if reference_date is None:
+            return None, True
+        year = reference_date.year if month <= reference_date.month else reference_date.year - 1
+        return _month_range(year, month), False
+
     if _contains_any(query, ("今月", "this month", "先月", "last month")):
         if reference_date is None:
             return None, True
@@ -79,13 +87,15 @@ def _date_range(query: str, reference_date: date | None) -> tuple[tuple[date, da
             return _month_range(year, month), False
         return _month_range(reference_date.year, reference_date.month), False
 
-    month = _yearless_month(query)
-    if month is None:
+    relative_period = _relative_period(query)
+    if relative_period is None:
         return None, False
     if reference_date is None:
         return None, True
-    year = reference_date.year if month <= reference_date.month else reference_date.year - 1
-    return _month_range(year, month), False
+    amount, unit = relative_period
+    if unit == "months":
+        return _relative_month_range(reference_date, amount), False
+    return (reference_date - _relative_period_delta(amount, unit), reference_date), False
 
 
 def _explicit_year_month(query: str) -> tuple[int, int] | None:
@@ -109,6 +119,37 @@ def _yearless_month(query: str) -> int | None:
         if re.search(rf"\bin\s+{name}\b", query):
             return month
     return None
+
+
+def _relative_period(query: str) -> tuple[int, str] | None:
+    """Parse numeric relative periods that must become a hard date range."""
+    japanese = re.search(r"(?:最近|直近|過去)\s*(\d{1,3})\s*(週間|日|ヶ月|か月|月)", query)
+    if japanese is not None:
+        amount = int(japanese.group(1))
+        unit = japanese.group(2)
+        return amount, {"週間": "weeks", "日": "days", "ヶ月": "months", "か月": "months", "月": "months"}[unit]
+
+    english = re.search(r"\b(?:last|past)\s+(\d{1,3})\s+(weeks?|days?|months?)\b", query)
+    if english is not None:
+        amount = int(english.group(1))
+        unit = english.group(2).rstrip("s")
+        return amount, f"{unit}s"
+    return None
+
+
+def _relative_period_delta(amount: int, unit: str) -> timedelta:
+    if unit == "weeks":
+        return timedelta(days=max(amount * 7 - 1, 0))
+    return timedelta(days=max(amount - 1, 0))
+
+
+def _relative_month_range(reference_date: date, months: int) -> tuple[date, date]:
+    """Use a calendar-month offset while keeping the reference date as the inclusive end."""
+    total_months = reference_date.year * 12 + reference_date.month - 1 - months
+    year, month_index = divmod(total_months, 12)
+    month = month_index + 1
+    start_day = min(reference_date.day, monthrange(year, month)[1])
+    return date(year, month, start_day), reference_date
 
 
 def _month_range(year: int, month: int) -> tuple[date, date]:
