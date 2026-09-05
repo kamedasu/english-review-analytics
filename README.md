@@ -197,7 +197,7 @@ python -m src.rag.indexer
 python -m src.rag.indexer --incremental
 ```
 
-差分更新はadded / changedのDocumentだけをEmbeddingし、deletedはChromaから削除します。unchanged Documentは再Embeddingしません。Notion syncとは自動連携せず、indexがない場合は初回full buildを行います。embedding modelまたはDocument schemaがindex metadataと異なる場合は、安全のためfull rebuildを実行してください。
+差分更新はadded / changedのDocumentだけをEmbeddingし、deletedはChromaから削除します。unchanged Documentは再Embeddingしません。indexがない場合は初回full buildを行います。embedding modelまたはDocument schemaがindex metadataと異なる場合は、安全のためfull rebuildを実行してください。
 
 Chromaはローカルの `RAG_CHROMA_DIR`（未指定時は `data/chroma`）へ保存される派生データで、Git管理対象外です。デフォルトcollection名は `english_review_documents` です。
 
@@ -229,6 +229,8 @@ streamlit run app.py
 通常表示ではローカル保存済みの `processed/reviews.json` と `state/state.json` だけを使い、Notion APIは呼びません。
 
 サイドバーの `Sync from Notion` を押したときだけ、active月ページをNotion APIから取得します。同期時は月ページを取得したあとreview単位で `date + content_hash` を照合し、既存reviewはスキップして、新規または変更されたreviewだけを保存します。同期結果には追加件数、更新件数、スキップ件数、同期月が表示されます。
+
+SyncとReview保存が成功した後は、保存済みReviewをsource of truthとしてIncremental RAG Index Updateも自動実行します。差分がなければEmbeddingは呼ばれません。RAG更新が失敗しても保存済みReviewはrollbackせず安全に維持され、embedding model／schemaの不一致時にも自動full rebuildは行いません。Ask My English Historyの表示・質問や通常の画面rerunではindexを更新しません。
 
 ## 集計単位の切り替え
 

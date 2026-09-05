@@ -18,9 +18,10 @@ from src.analytics import (
     summarize_year,
     weak_points_to_dataframe,
 )
-from src.data_loader import load_or_fetch_reviews
+from src.data_loader import load_local_reviews, load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
 from src.rag.answerer import RagAnswerer
+from src.rag.sync_update import RagSyncUpdateOutcome, run_rag_update_after_sync, sync_completed_successfully
 from src.rag.ui_helpers import prepare_rag_answer_request, rag_error_message, source_display
 
 
@@ -89,10 +90,20 @@ def main() -> None:
     debug = load_result.debug
     resolve_cache_event(debug.loaded_at, sync)
 
+    rag_sync_outcome: RagSyncUpdateOutcome | None = None
+    if sync and sync_completed_successfully(debug):
+        # Re-read the persisted source of truth; do not index transient Notion response data.
+        saved_result = load_local_reviews()
+        if any(status.status == "エラー" for status in saved_result.debug.page_statuses):
+            rag_sync_outcome = RagSyncUpdateOutcome(error_kind="update_failed")
+        else:
+            with st.spinner("Updating RAG index..."):
+                rag_sync_outcome = run_rag_update_after_sync(debug, saved_result.reviews)
+
     for message in debug.messages:
         st.sidebar.caption(message)
     if debug.sync_requested:
-        render_sync_result(debug)
+        render_sync_result(debug, rag_sync_outcome)
 
     if any(item.status == "エラー" for item in debug.page_statuses):
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
@@ -194,7 +205,7 @@ def select_period(reviews: list, period_type: str):
     return selected, filter_reviews_by_year(reviews, selected), summarize_year(reviews, selected)
 
 
-def render_sync_result(debug) -> None:
+def render_sync_result(debug, rag_sync_outcome: RagSyncUpdateOutcome | None = None) -> None:
     st.info("Sync from Notion completed. 通常表示はローカル保存済みデータを使います。")
     rows = [
         {
@@ -210,6 +221,31 @@ def render_sync_result(debug) -> None:
     ]
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
+    if rag_sync_outcome is not None:
+        render_rag_sync_update(rag_sync_outcome)
+
+
+def render_rag_sync_update(outcome: RagSyncUpdateOutcome) -> None:
+    if outcome.error_kind == "rebuild_required":
+        st.warning("RAG Index requires a full rebuild. Saved review data is safe.")
+        return
+    if outcome.error_kind:
+        st.warning("RAG Index Update failed. Saved review data is safe. Run the incremental index update again later.")
+        return
+    if outcome.result is None:
+        return
+
+    result = outcome.result
+    st.markdown("#### RAG Index Update")
+    if not (result.added_count or result.changed_count or result.deleted_count):
+        st.caption("No changes")
+    st.write(
+        f"Added: {result.added_count} · Changed: {result.changed_count} · "
+        f"Deleted: {result.deleted_count} · Unchanged: {result.unchanged_count} · "
+        f"Embedded: {result.embedded_count} · Stored: {result.stored_count}"
+    )
+    if result.initial_build:
+        st.caption("RAG index did not exist, so an initial index was created.")
 
 
 def render_period_summary(period_type: str, summary, period_summary) -> None:
