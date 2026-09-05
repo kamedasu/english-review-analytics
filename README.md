@@ -191,6 +191,14 @@ LLMにはレビュー全文をそのまま渡さず、summary生成用に要約�
 python -m src.rag.indexer
 ```
 
+保存済みReviewに対する差分更新は、次のように明示実行します。
+
+```bash
+python -m src.rag.indexer --incremental
+```
+
+差分更新はadded / changedのDocumentだけをEmbeddingし、deletedはChromaから削除します。unchanged Documentは再Embeddingしません。Notion syncとは自動連携せず、indexがない場合は初回full buildを行います。embedding modelまたはDocument schemaがindex metadataと異なる場合は、安全のためfull rebuildを実行してください。
+
 Chromaはローカルの `RAG_CHROMA_DIR`（未指定時は `data/chroma`）へ保存される派生データで、Git管理対象外です。デフォルトcollection名は `english_review_documents` です。
 
 既存indexを意味検索するには、以下を実行します。検索時はquery 1件だけをEmbeddingし、indexの再構築やNotion同期は行いません。

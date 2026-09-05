@@ -20,6 +20,12 @@ class ChromaCollection(Protocol):
     def count(self) -> int:
         ...
 
+    def get(self, *, include: list[str]) -> dict[str, list[Any]]:
+        ...
+
+    def delete(self, *, ids: list[str]) -> None:
+        ...
+
     def query(
         self,
         *,
@@ -38,7 +44,12 @@ class ChromaClient(Protocol):
     def delete_collection(self, name: str) -> None:
         ...
 
-    def create_collection(self, name: str, embedding_function: Any = None) -> ChromaCollection:
+    def create_collection(
+        self,
+        name: str,
+        embedding_function: Any = None,
+        metadata: dict[str, str] | None = None,
+    ) -> ChromaCollection:
         ...
 
     def get_collection(self, name: str, embedding_function: Any = None) -> ChromaCollection:
@@ -49,6 +60,10 @@ class RagIndexNotFoundError(RuntimeError):
     """Raised when the configured local RAG collection has not been built."""
 
 
+class RagIndexRebuildRequiredError(RuntimeError):
+    """Raised when index metadata is incompatible with an incremental update."""
+
+
 class ChromaStore:
     """Persistent local Chroma storage. It never performs embedding itself."""
 
@@ -57,7 +72,12 @@ class ChromaStore:
         self.collection_name = collection_name
         self._client = client or _persistent_client(path)
 
-    def rebuild(self, documents: list[RagDocument], embeddings: list[list[float]]) -> int:
+    def rebuild(
+        self,
+        documents: list[RagDocument],
+        embeddings: list[list[float]],
+        collection_metadata: dict[str, str] | None = None,
+    ) -> int:
         _validate_lengths(documents, embeddings)
         existing_names = {
             collection.name if hasattr(collection, "name") else str(collection)
@@ -68,7 +88,53 @@ class ChromaStore:
         collection = self._client.create_collection(
             name=self.collection_name,
             embedding_function=None,
+            metadata=collection_metadata,
         )
+        if documents:
+            collection.add(
+                ids=[document.id for document in documents],
+                documents=[document.text for document in documents],
+                embeddings=embeddings,
+                metadatas=[document.metadata for document in documents],
+            )
+        return collection.count()
+
+    def collection_exists(self) -> bool:
+        return self.collection_name in self._collection_names()
+
+    def get_all_documents(self) -> list[RagDocument]:
+        """Return the stored source fields needed for deterministic incremental diffing."""
+        collection = self._get_collection()
+        payload = collection.get(include=["documents", "metadatas"])
+        ids = payload.get("ids", [])
+        documents = payload.get("documents", [])
+        metadatas = payload.get("metadatas", [])
+        if not (len(ids) == len(documents) == len(metadatas)):
+            raise ValueError("Chroma get returned mismatched document field counts.")
+        result: list[RagDocument] = []
+        for document_id, text, metadata in zip(ids, documents, metadatas):
+            if not isinstance(document_id, str) or not isinstance(text, str) or not isinstance(metadata, dict):
+                raise ValueError("Chroma get returned an invalid document result.")
+            result.append(RagDocument(id=document_id, text=text, metadata=metadata))
+        return result
+
+    def collection_metadata(self) -> dict[str, str]:
+        collection = self._get_collection()
+        metadata = getattr(collection, "metadata", None) or {}
+        if not isinstance(metadata, dict):
+            raise ValueError("Chroma collection metadata is invalid.")
+        return {str(key): str(value) for key, value in metadata.items()}
+
+    def apply_incremental(
+        self,
+        delete_ids: list[str],
+        documents: list[RagDocument],
+        embeddings: list[list[float]],
+    ) -> int:
+        _validate_lengths(documents, embeddings)
+        collection = self._get_collection()
+        if delete_ids:
+            collection.delete(ids=delete_ids)
         if documents:
             collection.add(
                 ids=[document.id for document in documents],
@@ -85,15 +151,7 @@ class ChromaStore:
         where: dict[str, str | int | float | bool] | None = None,
     ) -> dict[str, list[list[Any]]]:
         """Search the existing collection with a caller-provided embedding."""
-        if not self.path.exists():
-            raise _index_not_found()
-        try:
-            collection = self._client.get_collection(
-                name=self.collection_name,
-                embedding_function=None,
-            )
-        except Exception as exc:
-            raise _index_not_found() from exc
+        collection = self._get_collection()
 
         result_count = min(k, collection.count())
         if result_count == 0:
@@ -106,6 +164,23 @@ class ChromaStore:
         if where is not None:
             kwargs["where"] = where
         return collection.query(**kwargs)
+
+    def _collection_names(self) -> set[str]:
+        return {
+            collection.name if hasattr(collection, "name") else str(collection)
+            for collection in self._client.list_collections()
+        }
+
+    def _get_collection(self) -> ChromaCollection:
+        if not self.path.exists():
+            raise _index_not_found()
+        try:
+            return self._client.get_collection(
+                name=self.collection_name,
+                embedding_function=None,
+            )
+        except Exception as exc:
+            raise _index_not_found() from exc
 
 
 def _persistent_client(path: Path) -> ChromaClient:
