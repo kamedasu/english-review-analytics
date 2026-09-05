@@ -192,6 +192,12 @@ python -m src.rag.indexer
 
 Chromaはローカルの `RAG_CHROMA_DIR`（未指定時は `data/chroma`）へ保存される派生データで、Git管理対象外です。デフォルトcollection名は `english_review_documents` です。
 
+既存indexを意味検索するには、以下を実行します。検索時はquery 1件だけをEmbeddingし、indexの再構築やNotion同期は行いません。
+
+```bash
+python -m src.rag.retriever "前置詞でどんなミスをしてる？"
+```
+
 ## 起動
 
 ```bash

@@ -20,6 +20,16 @@ class ChromaCollection(Protocol):
     def count(self) -> int:
         ...
 
+    def query(
+        self,
+        *,
+        query_embeddings: list[list[float]],
+        n_results: int,
+        include: list[str],
+        where: dict[str, str | int | float | bool] | None = None,
+    ) -> dict[str, list[list[Any]]]:
+        ...
+
 
 class ChromaClient(Protocol):
     def list_collections(self) -> list[Any]:
@@ -30,6 +40,13 @@ class ChromaClient(Protocol):
 
     def create_collection(self, name: str, embedding_function: Any = None) -> ChromaCollection:
         ...
+
+    def get_collection(self, name: str, embedding_function: Any = None) -> ChromaCollection:
+        ...
+
+
+class RagIndexNotFoundError(RuntimeError):
+    """Raised when the configured local RAG collection has not been built."""
 
 
 class ChromaStore:
@@ -61,6 +78,35 @@ class ChromaStore:
             )
         return collection.count()
 
+    def query(
+        self,
+        query_embedding: list[float],
+        k: int,
+        where: dict[str, str | int | float | bool] | None = None,
+    ) -> dict[str, list[list[Any]]]:
+        """Search the existing collection with a caller-provided embedding."""
+        if not self.path.exists():
+            raise _index_not_found()
+        try:
+            collection = self._client.get_collection(
+                name=self.collection_name,
+                embedding_function=None,
+            )
+        except Exception as exc:
+            raise _index_not_found() from exc
+
+        result_count = min(k, collection.count())
+        if result_count == 0:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        kwargs: dict[str, Any] = {
+            "query_embeddings": [query_embedding],
+            "n_results": result_count,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where is not None:
+            kwargs["where"] = where
+        return collection.query(**kwargs)
+
 
 def _persistent_client(path: Path) -> ChromaClient:
     try:
@@ -76,3 +122,7 @@ def _validate_lengths(documents: list[RagDocument], embeddings: list[list[float]
         raise ValueError(
             f"Document and embedding counts must match: {len(documents)} documents, {len(embeddings)} embeddings."
         )
+
+
+def _index_not_found() -> RagIndexNotFoundError:
+    return RagIndexNotFoundError("RAG index is not available. Run: python -m src.rag.indexer")
