@@ -24,6 +24,7 @@ class Settings:
     openai_api_key: str
     openai_model: str
     openai_summary_retry_count: int
+    openai_rag_model: str
     openai_embedding_model: str
     rag_embedding_batch_size: int
     rag_chroma_dir: Path
@@ -47,6 +48,7 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         openai_summary_retry_count=_safe_int(os.getenv("OPENAI_SUMMARY_RETRY_COUNT", ""), default=3),
+        openai_rag_model=os.getenv("OPENAI_RAG_MODEL", "gpt-4.1-mini"),
         openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
         rag_embedding_batch_size=_safe_positive_int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", ""), default=64),
         rag_chroma_dir=_rag_chroma_dir(),

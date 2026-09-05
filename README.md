@@ -74,6 +74,7 @@ ARCHIVED_MONTHS=2026-04
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_SUMMARY_RETRY_COUNT=3
+OPENAI_RAG_MODEL=gpt-4.1-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 RAG_EMBEDDING_BATCH_SIZE=64
 RAG_CHROMA_DIR=
@@ -196,6 +197,12 @@ Chromaはローカルの `RAG_CHROMA_DIR`（未指定時は `data/chroma`）へ�
 
 ```bash
 python -m src.rag.retriever "前置詞でどんなミスをしてる？"
+```
+
+Retriever結果を根拠にした回答を生成するには、以下を実行します。回答生成は既存indexを読むだけで、Notion同期やindex再構築は行いません。
+
+```bash
+python -m src.rag.answerer "過去にも前置詞で同じようなミスしてた？"
 ```
 
 ## 起動
