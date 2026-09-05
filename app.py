@@ -20,6 +20,8 @@ from src.analytics import (
 )
 from src.data_loader import load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
+from src.rag.answerer import RagAnswerer
+from src.rag.ui_helpers import prepare_rag_answer_request, rag_error_message, source_display
 
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
@@ -95,13 +97,21 @@ def main() -> None:
     if any(item.status == "エラー" for item in debug.page_statuses):
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
 
-    if not reviews:
-        if any(item.status == "エラー" for item in debug.page_statuses):
-            st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
+    analytics_tab, history_tab = st.tabs(["Analytics", "Ask My English History"])
+    with analytics_tab:
+        if not reviews:
+            if any(item.status == "エラー" for item in debug.page_statuses):
+                st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
+            else:
+                st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
         else:
-            st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
-        return
+            render_analytics(reviews)
 
+    with history_tab:
+        render_ask_my_english_history()
+
+
+def render_analytics(reviews: list) -> None:
     period_type = st.segmented_control(
         "Aggregation",
         ["Monthly", "Quarterly", "Yearly"],
@@ -115,12 +125,57 @@ def main() -> None:
     with st.spinner("Generating summary..."):
         period_summary = cached_period_summary(summary, period_reviews, period_type)
     summary.llm_summary = period_summary.text
-
     render_metrics(summary)
-
     render_period_summary(period_type, summary, period_summary)
-
     render_improvement_focus(period_reviews)
+
+
+def render_ask_my_english_history() -> None:
+    st.subheader("Ask My English History")
+    st.caption("過去の英語学習履歴に質問")
+    st.caption("例: 過去にも同じミスしてた？ / カフェの話で以前覚えた表現は？ / 最近の弱点は？")
+
+    with st.form("rag_ask_form"):
+        query = st.text_area(
+            "Question",
+            key="rag_input_query",
+            placeholder="過去にも同じミスしてた？",
+            height=100,
+        )
+        submitted = st.form_submit_button("Ask")
+
+    query_to_run = prepare_rag_answer_request(submitted, query, st.session_state)
+    if query_to_run is not None:
+        try:
+            with st.spinner("Searching your English history..."):
+                st.session_state["rag_answer"] = RagAnswerer().answer(query_to_run, k=5)
+        except Exception as exc:
+            st.session_state["rag_error"] = rag_error_message(exc)
+
+    error = st.session_state.get("rag_error", "")
+    if error:
+        st.error(error)
+
+    answer = st.session_state.get("rag_answer")
+    if answer is None:
+        return
+    st.markdown("### Answer")
+    st.markdown(answer.answer)
+    if not answer.sources:
+        return
+
+    with st.expander("Sources"):
+        for number, source in enumerate(answer.sources, start=1):
+            display = source_display(source, number)
+            st.markdown(f"#### Source {display.number}")
+            if display.date:
+                st.write(f"Date: {display.date}")
+            if display.type_label:
+                st.write(f"Type: {display.type_label}")
+            if display.topic:
+                st.write(f"Topic: {display.topic}")
+            st.write("Text:")
+            st.write(display.text)
 
 
 def select_period(reviews: list, period_type: str):

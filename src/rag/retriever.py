@@ -10,6 +10,34 @@ from src.rag.embeddings import EmbeddingProvider, OpenAIEmbeddingProvider
 from src.rag.models import RagDocument, RagMetadataValue
 
 
+TYPE_DISTANCE_PENALTIES = {
+    "more_natural_expression": 0.0,
+    "phrase_card": 0.015,
+    "weak_point": 0.03,
+    "good_point": 0.045,
+}
+"""Small deterministic offsets that favour concrete learning records without replacing relevance."""
+
+LEARNING_DOCUMENT_TYPES = frozenset({"more_natural_expression", "phrase_card"})
+EXPRESSION_QUERY_MARKERS = (
+    "表現",
+    "修正",
+    "直され",
+    "言い換え",
+    "具体例",
+    "実際にどんな英語",
+    "どんな英語",
+    "correction",
+    "corrected",
+    "expression",
+    "phrase",
+    "example",
+    "before",
+    "after",
+)
+EXPRESSION_RELEVANCE_DISTANCE_MARGIN = 0.4
+
+
 @dataclass(frozen=True)
 class RetrievedDocument:
     document: RagDocument
@@ -55,8 +83,108 @@ class RagRetriever:
         embeddings = self._embedding_provider.embed_texts([clean_query])
         if len(embeddings) != 1:
             raise ValueError(f"Query embedding count mismatch: expected 1, received {len(embeddings)}.")
-        response = self._chroma_store.query(embeddings[0], k, where)
-        return _retrieved_documents(response)
+        candidate_k = k if where is not None else _candidate_count(k)
+        response = self._chroma_store.query(embeddings[0], candidate_k, where)
+        results = _retrieved_documents(response)
+        if where is not None:
+            return results[:k]
+        if _is_expression_focused_query(clean_query):
+            learning_candidates = _learning_type_candidates(self._chroma_store, embeddings[0], k)
+            return _prioritize_expression_documents(results, learning_candidates, k)
+        return _prioritize_learning_documents(results, k)
+
+
+def _candidate_count(k: int) -> int:
+    return k * 4
+
+
+def _is_expression_focused_query(query: str) -> bool:
+    normalized = query.casefold()
+    return any(marker in normalized for marker in EXPRESSION_QUERY_MARKERS)
+
+
+def _learning_type_candidates(
+    chroma_store: QueryStore,
+    query_embedding: list[float],
+    k: int,
+) -> list[RetrievedDocument]:
+    candidates: list[RetrievedDocument] = []
+    for document_type in ("more_natural_expression", "phrase_card"):
+        response = chroma_store.query(query_embedding, k, {"type": document_type})
+        candidates.extend(_retrieved_documents(response))
+    return candidates
+
+
+def _prioritize_expression_documents(
+    semantic_candidates: list[RetrievedDocument],
+    learning_candidates: list[RetrievedDocument],
+    k: int,
+) -> list[RetrievedDocument]:
+    """Reserve up to three sufficiently relevant concrete-expression sources for expression questions."""
+    if not semantic_candidates:
+        return []
+
+    best_distance = min(candidate.distance for candidate in semantic_candidates)
+    maximum_learning_distance = best_distance + EXPRESSION_RELEVANCE_DISTANCE_MARGIN
+    concrete_candidates = [
+        candidate
+        for candidate in _unique_documents(learning_candidates)
+        if candidate.distance <= maximum_learning_distance
+    ]
+    concrete_candidates.sort(
+        key=lambda candidate: (
+            candidate.distance + TYPE_DISTANCE_PENALTIES.get(
+                str(candidate.document.metadata.get("type", "")),
+                TYPE_DISTANCE_PENALTIES["good_point"],
+            ),
+        )
+    )
+    concrete_limit = min(max(k - 2, 0), len(concrete_candidates))
+    selected = concrete_candidates[:concrete_limit]
+    selected_ids = {candidate.document.id for candidate in selected}
+
+    support_candidates = [
+        candidate
+        for candidate in _unique_documents(semantic_candidates)
+        if candidate.document.id not in selected_ids
+        and str(candidate.document.metadata.get("type", "")) not in LEARNING_DOCUMENT_TYPES
+    ]
+    support_candidates.sort(key=lambda candidate: candidate.distance)
+    selected.extend(support_candidates[: k - len(selected)])
+    if len(selected) < k:
+        selected.extend(
+            candidate
+            for candidate in _prioritize_learning_documents(semantic_candidates, k)
+            if candidate.document.id not in {item.document.id for item in selected}
+        )
+    return selected[:k]
+
+
+def _unique_documents(candidates: list[RetrievedDocument]) -> list[RetrievedDocument]:
+    unique: list[RetrievedDocument] = []
+    seen_ids: set[str] = set()
+    for candidate in candidates:
+        if candidate.document.id not in seen_ids:
+            unique.append(candidate)
+            seen_ids.add(candidate.document.id)
+    return unique
+
+
+def _prioritize_learning_documents(
+    candidates: list[RetrievedDocument], k: int,
+) -> list[RetrievedDocument]:
+    """Keep Chroma's semantic candidates, then use a modest type-aware tie-breaker."""
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            item[1].distance + TYPE_DISTANCE_PENALTIES.get(
+                str(item[1].document.metadata.get("type", "")),
+                TYPE_DISTANCE_PENALTIES["good_point"],
+            ),
+            item[0],
+        ),
+    )
+    return [candidate for _, candidate in ranked[:k]]
 
 
 def _retrieved_documents(response: dict[str, list[list[object]]]) -> list[RetrievedDocument]:

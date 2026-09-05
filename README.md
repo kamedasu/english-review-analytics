@@ -205,6 +205,13 @@ Retriever結果を根拠にした回答を生成するには、以下を実行�
 python -m src.rag.answerer "過去にも前置詞で同じようなミスしてた？"
 ```
 
+Streamlitでは **Ask My English History** tabから質問できます。事前にindexを作成し、アプリを起動してください。質問の入力や画面の再描画ではAPIを呼ばず、**Ask** を押した時だけ検索Embeddingと回答生成を実行します。
+
+```bash
+python -m src.rag.indexer
+streamlit run app.py
+```
+
 ## 起動
 
 ```bash
