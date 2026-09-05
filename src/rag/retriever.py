@@ -39,8 +39,9 @@ EXPRESSION_QUERY_MARKERS = (
 )
 EXPRESSION_RELEVANCE_DISTANCE_MARGIN = 0.4
 RECENT_WINDOWS_DAYS = (60, 120, 180)
-MAX_CANDIDATES_PER_TYPE = 120
+MAX_CANDIDATES_PER_TYPE = 400
 MAX_RECENCY_REFERENCE_CANDIDATES = 2000
+ALL_DOCUMENT_TYPES = ("more_natural_expression", "phrase_card", "weak_point", "good_point")
 
 INTENT_DOCUMENT_TYPES = {
     "natural_expression": ("more_natural_expression", "phrase_card"),
@@ -95,9 +96,13 @@ class RagRetriever:
         embeddings = self._embedding_provider.embed_texts([clean_query])
         if len(embeddings) != 1:
             raise ValueError(f"Query embedding count mismatch: expected 1, received {len(embeddings)}.")
+        latest_index_date: date | None = None
         intent = parse_rag_query(clean_query)
-        if where is None and intent.kind in INTENT_DOCUMENT_TYPES:
-            return _retrieve_for_intent(self._chroma_store, embeddings[0], intent, k)
+        if where is None and (intent.requires_reference_date or intent.recent):
+            latest_index_date = _latest_index_document_date(self._chroma_store, embeddings[0])
+            intent = parse_rag_query(clean_query, latest_index_date)
+        if where is None and (intent.kind in INTENT_DOCUMENT_TYPES or intent.start_date is not None):
+            return _retrieve_for_intent(self._chroma_store, embeddings[0], intent, k, latest_index_date)
 
         candidate_k = k if where is not None else _candidate_count(k)
         response = self._chroma_store.query(embeddings[0], candidate_k, where)
@@ -119,14 +124,16 @@ def _retrieve_for_intent(
     query_embedding: list[float],
     intent: RagQueryIntent,
     k: int,
+    latest_index_date: date | None = None,
 ) -> list[RetrievedDocument]:
     """Retrieve only the document types appropriate for an explicit learning intent."""
     candidates: list[RetrievedDocument] = []
     candidate_k = min(max(k * 4, 60), MAX_CANDIDATES_PER_TYPE)
-    for document_type in INTENT_DOCUMENT_TYPES[intent.kind]:
+    for document_type in _intent_document_types(intent):
         response = chroma_store.query(query_embedding, candidate_k, {"type": document_type})
         candidates.extend(_retrieved_documents(response))
-    latest_index_date = _latest_index_document_date(chroma_store, query_embedding) if intent.recent else None
+    if intent.recent and latest_index_date is None:
+        latest_index_date = _latest_index_document_date(chroma_store, query_embedding)
     return _select_intent_documents(candidates, intent, k, latest_index_date)
 
 
@@ -139,6 +146,15 @@ def _select_intent_documents(
     unique_candidates = _deduplicate_learning_documents(candidates)
     if not unique_candidates:
         return []
+
+    if intent.start_date is not None and intent.end_date is not None:
+        in_range = [
+            candidate
+            for candidate in unique_candidates
+            if (candidate_date := _document_date(candidate)) is not None
+            and intent.start_date <= candidate_date <= intent.end_date
+        ]
+        return _sort_intent_documents(in_range, intent)[:k]
 
     if intent.recent:
         latest_date = latest_index_date or max((_document_date(candidate) for candidate in unique_candidates), default=None)
@@ -172,7 +188,7 @@ def _documents_in_recent_window(
 
 
 def _sort_intent_documents(candidates: list[RetrievedDocument], intent: RagQueryIntent) -> list[RetrievedDocument]:
-    type_order = {document_type: index for index, document_type in enumerate(INTENT_DOCUMENT_TYPES[intent.kind])}
+    type_order = {document_type: index for index, document_type in enumerate(_intent_document_types(intent))}
     if intent.recent:
         return sorted(
             candidates,
@@ -189,6 +205,10 @@ def _sort_intent_documents(candidates: list[RetrievedDocument], intent: RagQuery
             candidate.distance,
         ),
     )
+
+
+def _intent_document_types(intent: RagQueryIntent) -> tuple[str, ...]:
+    return INTENT_DOCUMENT_TYPES.get(intent.kind, ALL_DOCUMENT_TYPES)
 
 
 def _document_date(candidate: RetrievedDocument) -> date | None:

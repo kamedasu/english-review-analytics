@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from datetime import date
 
 from src.rag.chroma_store import ChromaStore, RagIndexNotFoundError
 from src.rag.retriever import (
@@ -216,6 +217,31 @@ class RagRetrieverTest(unittest.TestCase):
         results = _select_intent_documents(candidates, intent, k=5)
 
         self.assertEqual([result.document.id for result in results], ["phrase-1", "natural-1"])
+
+    def test_explicit_date_range_is_a_hard_filter_even_when_requested_count_is_not_met(self) -> None:
+        candidates = [
+            _source("july-natural", "more_natural_expression", 0.40, "2026-07-14", "More natural: July only"),
+            _source("july-phrase", "phrase_card", 0.50, "2026-07-03", "Phrase: July fallback"),
+            _source("june-natural", "more_natural_expression", 0.01, "2026-06-14", "More natural: outside"),
+            _source("april-phrase", "phrase_card", 0.02, "2026-04-24", "Phrase: outside"),
+        ]
+        intent = RagQueryIntent("natural_expression", 10, True, True, date(2026, 7, 1), date(2026, 7, 31))
+
+        results = _select_intent_documents(candidates, intent, k=10)
+
+        self.assertEqual([result.document.id for result in results], ["july-natural", "july-phrase"])
+        self.assertTrue(all(result.document.metadata["date"].startswith("2026-07") for result in results))
+
+    def test_explicit_date_range_can_use_secondary_type_but_not_good_or_weak_fillers(self) -> None:
+        candidates = [
+            _source("july-phrase", "phrase_card", 0.10, "2026-07-20", "Phrase: useful"),
+            _source("july-natural", "more_natural_expression", 0.20, "2026-07-19", "More natural: natural alternative"),
+        ]
+        intent = RagQueryIntent("phrase_recommendation", 10, False, True, date(2026, 7, 1), date(2026, 7, 31))
+
+        results = _select_intent_documents(candidates, intent, k=10)
+
+        self.assertEqual([result.document.metadata["type"] for result in results], ["phrase_card", "more_natural_expression"])
 
     def test_rejects_blank_query_and_non_positive_k_without_embedding(self) -> None:
         provider = FakeEmbeddingProvider()

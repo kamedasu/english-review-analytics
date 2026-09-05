@@ -93,6 +93,13 @@ class RagAnswererTest(unittest.TestCase):
         self.assertEqual(retriever.calls, [("自然な表現を10個教えて", 10)])
         self.assertIn("requested 10 items", provider.calls[0][1])
 
+    def test_date_constrained_query_tells_answer_provider_not_to_expand_beyond_sources(self) -> None:
+        provider = FakeAnswerProvider()
+
+        RagAnswerer(FakeRetriever(_sources()), provider).answer("2026年7月の表現を10個教えて")
+
+        self.assertIn("hard-filtered to the user's requested date range", provider.calls[0][1])
+
     def test_context_keeps_only_reference_fields_and_is_numbered(self) -> None:
         context = build_answer_context(_sources())
         self.assertIn("[Source 1]", context)

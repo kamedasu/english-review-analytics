@@ -97,6 +97,7 @@ class RagAnswerer:
         context = build_answer_context(
             sources,
             requested_count=intent.requested_count if intent.has_explicit_count else None,
+            has_date_constraint=intent.start_date is not None or intent.requires_reference_date,
         )
         provider = self._answer_provider or OpenAIAnswerGenerationProvider.from_settings()
         return RagAnswer(
@@ -105,7 +106,11 @@ class RagAnswerer:
         )
 
 
-def build_answer_context(sources: list[RetrievedDocument], requested_count: int | None = None) -> str:
+def build_answer_context(
+    sources: list[RetrievedDocument],
+    requested_count: int | None = None,
+    has_date_constraint: bool = False,
+) -> str:
     """Format retrieved semantic documents as numbered, untrusted reference material."""
     blocks: list[str] = []
     for index, source in enumerate(sources, start=1):
@@ -124,7 +129,13 @@ def build_answer_context(sources: list[RetrievedDocument], requested_count: int 
         if requested_count is not None
         else ""
     )
-    return requested_count_line + "\n\n".join(blocks)
+    date_constraint_line = (
+        "The source records have been hard-filtered to the user's requested date range. "
+        "Do not infer, add, or discuss history outside that range.\n\n"
+        if has_date_constraint
+        else ""
+    )
+    return requested_count_line + date_constraint_line + "\n\n".join(blocks)
 
 
 def _answer_instructions() -> str:
@@ -138,6 +149,7 @@ def _answer_instructions() -> str:
         "natural expression, not as a correction of a guessed original. If the original erroneous phrase is not in "
         "the context, say it is not recorded in the retrieved history and never infer or create one. "
         "When the user requests a number of expressions, use as many distinct supplied sources as possible up to that number. "
+        "When the user specifies a date or month, never supplement the answer with history outside the supplied source dates. "
         "For natural expressions and phrase recommendations, prefer a concise numbered list that preserves the recorded English. "
         "Answer the user's question directly and concisely, without drifting into unnecessary general advice. "
         "Answer Japanese questions in Japanese and English questions primarily in English; preserve English expressions when useful. "
