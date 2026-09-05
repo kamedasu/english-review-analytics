@@ -9,8 +9,10 @@ from src.rag.retriever import (
     _is_expression_focused_query,
     _prioritize_expression_documents,
     _prioritize_learning_documents,
+    _select_intent_documents,
 )
 from src.rag.models import RagDocument
+from src.rag.query_intent import RagQueryIntent
 
 
 class FakeEmbeddingProvider:
@@ -70,9 +72,9 @@ class RagRetrieverTest(unittest.TestCase):
         provider = FakeEmbeddingProvider()
         store = FakeQueryStore()
 
-        results = RagRetriever(provider, store).retrieve("  preposition mistakes  ", k=2)
+        results = RagRetriever(provider, store).retrieve("  coffee conversation  ", k=2)
 
-        self.assertEqual(provider.texts, ["preposition mistakes"])
+        self.assertEqual(provider.texts, ["coffee conversation"])
         self.assertEqual(store.calls, [([0.25, 0.75], 8, None)])
         self.assertEqual([result.document.id for result in results], ["weak:0", "phrase:0"])
         self.assertEqual([result.document.text for result in results], ["Weak point: prepositions", "Phrase: at the cafe"])
@@ -88,11 +90,11 @@ class RagRetrieverTest(unittest.TestCase):
     def test_expression_query_adds_type_filtered_learning_candidates(self) -> None:
         store = FakeQueryStore()
 
-        RagRetriever(FakeEmbeddingProvider(), store).retrieve("corrected English expression", k=5)
+        RagRetriever(FakeEmbeddingProvider(), store).retrieve("corrected expressions", k=5)
 
-        self.assertEqual(store.calls[0][2], None)
-        self.assertEqual(store.calls[1][2], {"type": "more_natural_expression"})
-        self.assertEqual(store.calls[2][2], {"type": "phrase_card"})
+        self.assertEqual(store.calls[0][2], {"type": "more_natural_expression"})
+        self.assertEqual(store.calls[1][2], {"type": "phrase_card"})
+        self.assertEqual(store.calls[0][1], 60)
 
     def test_prioritizes_a_similarly_relevant_more_natural_expression_over_weak_point(self) -> None:
         candidates = [
@@ -169,6 +171,52 @@ class RagRetrieverTest(unittest.TestCase):
         self.assertTrue(_is_expression_focused_query("過去に直された英語表現を具体例つきで教えて"))
         self.assertFalse(_is_expression_focused_query("最近の弱点は？"))
 
+    def test_natural_expression_selection_uses_mne_then_phrase_without_good_or_weak_fillers(self) -> None:
+        candidates = [
+            _source("natural-1", "more_natural_expression", 0.30, "2026-08-10", "More natural: Use this."),
+            _source("phrase-1", "phrase_card", 0.10, "2026-08-11", "Phrase: fallback"),
+        ]
+        intent = RagQueryIntent("natural_expression", 5, False, False)
+
+        results = _select_intent_documents(candidates, intent, k=5)
+
+        self.assertEqual([result.document.id for result in results], ["natural-1", "phrase-1"])
+
+    def test_phrase_recommendation_does_not_use_good_or_weak_as_fillers(self) -> None:
+        candidates = [
+            _source("phrase-1", "phrase_card", 0.10, "2026-08-11", "Phrase: useful"),
+            _source("natural-1", "more_natural_expression", 0.20, "2026-08-10", "More natural: natural"),
+        ]
+        intent = RagQueryIntent("phrase_recommendation", 5, False, False)
+
+        results = _select_intent_documents(candidates, intent, k=5)
+
+        self.assertEqual([result.document.metadata["type"] for result in results], ["phrase_card", "more_natural_expression"])
+
+    def test_recent_selection_prefers_newer_documents_and_expands_window_when_needed(self) -> None:
+        candidates = [
+            _source("recent", "more_natural_expression", 0.40, "2026-08-14", "More natural: recent"),
+            _source("older", "more_natural_expression", 0.10, "2026-04-20", "More natural: older"),
+        ]
+        intent = RagQueryIntent("natural_expression", 2, True, True)
+
+        results = _select_intent_documents(candidates, intent, k=2)
+
+        self.assertEqual([result.document.id for result in results], ["recent", "older"])
+
+    def test_deduplicates_phrase_and_more_natural_values(self) -> None:
+        candidates = [
+            _source("phrase-1", "phrase_card", 0.10, "2026-08-14", "Phrase: Wind down!"),
+            _source("phrase-2", "phrase_card", 0.20, "2026-08-13", "Phrase: wind down"),
+            _source("natural-1", "more_natural_expression", 0.30, "2026-08-12", "Your phrase: x\nMore natural: Keep it up."),
+            _source("natural-2", "more_natural_expression", 0.40, "2026-08-11", "Your phrase: y\nMore natural: keep it up"),
+        ]
+        intent = RagQueryIntent("phrase_recommendation", 5, False, False)
+
+        results = _select_intent_documents(candidates, intent, k=5)
+
+        self.assertEqual([result.document.id for result in results], ["phrase-1", "natural-1"])
+
     def test_rejects_blank_query_and_non_positive_k_without_embedding(self) -> None:
         provider = FakeEmbeddingProvider()
         retriever = RagRetriever(provider, FakeQueryStore())
@@ -200,8 +248,14 @@ class RagRetrieverTest(unittest.TestCase):
                 store.query([0.1], k=1)
 
 
-def _source(document_id: str, document_type: str, distance: float) -> RetrievedDocument:
+def _source(
+    document_id: str,
+    document_type: str,
+    distance: float,
+    document_date: str = "2026-01-01",
+    text: str | None = None,
+) -> RetrievedDocument:
     return RetrievedDocument(
-        RagDocument(document_id, f"{document_type}: {document_id}", {"type": document_type}),
+        RagDocument(document_id, text or f"{document_type}: {document_id}", {"type": document_type, "date": document_date}),
         distance,
     )

@@ -84,6 +84,15 @@ class RagAnswererTest(unittest.TestCase):
         self.assertEqual(result.sources, [])
         self.assertEqual(provider.calls, [])
 
+    def test_uses_query_requested_count_when_k_is_not_explicitly_overridden(self) -> None:
+        retriever = FakeRetriever(_sources())
+        provider = FakeAnswerProvider()
+
+        RagAnswerer(retriever, provider).answer("自然な表現を10個教えて")
+
+        self.assertEqual(retriever.calls, [("自然な表現を10個教えて", 10)])
+        self.assertIn("requested 10 items", provider.calls[0][1])
+
     def test_context_keeps_only_reference_fields_and_is_numbered(self) -> None:
         context = build_answer_context(_sources())
         self.assertIn("[Source 1]", context)

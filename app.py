@@ -148,7 +148,7 @@ def render_ask_my_english_history() -> None:
     if query_to_run is not None:
         try:
             with st.spinner("Searching your English history..."):
-                st.session_state["rag_answer"] = RagAnswerer().answer(query_to_run, k=5)
+                st.session_state["rag_answer"] = RagAnswerer().answer(query_to_run)
         except Exception as exc:
             st.session_state["rag_error"] = rag_error_message(exc)
 

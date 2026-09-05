@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Protocol
 
 from src.config import get_settings
 from src.rag.chroma_store import ChromaStore, RagIndexNotFoundError
 from src.rag.embeddings import EmbeddingProvider, OpenAIEmbeddingProvider
 from src.rag.models import RagDocument, RagMetadataValue
+from src.rag.query_intent import RagQueryIntent, parse_rag_query
 
 
 TYPE_DISTANCE_PENALTIES = {
@@ -36,6 +38,16 @@ EXPRESSION_QUERY_MARKERS = (
     "after",
 )
 EXPRESSION_RELEVANCE_DISTANCE_MARGIN = 0.4
+RECENT_WINDOWS_DAYS = (60, 120, 180)
+MAX_CANDIDATES_PER_TYPE = 120
+MAX_RECENCY_REFERENCE_CANDIDATES = 2000
+
+INTENT_DOCUMENT_TYPES = {
+    "natural_expression": ("more_natural_expression", "phrase_card"),
+    "phrase_recommendation": ("phrase_card", "more_natural_expression"),
+    "weakness": ("weak_point", "more_natural_expression"),
+    "strength": ("good_point",),
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,10 @@ class RagRetriever:
         embeddings = self._embedding_provider.embed_texts([clean_query])
         if len(embeddings) != 1:
             raise ValueError(f"Query embedding count mismatch: expected 1, received {len(embeddings)}.")
+        intent = parse_rag_query(clean_query)
+        if where is None and intent.kind in INTENT_DOCUMENT_TYPES:
+            return _retrieve_for_intent(self._chroma_store, embeddings[0], intent, k)
+
         candidate_k = k if where is not None else _candidate_count(k)
         response = self._chroma_store.query(embeddings[0], candidate_k, where)
         results = _retrieved_documents(response)
@@ -96,6 +112,123 @@ class RagRetriever:
 
 def _candidate_count(k: int) -> int:
     return k * 4
+
+
+def _retrieve_for_intent(
+    chroma_store: QueryStore,
+    query_embedding: list[float],
+    intent: RagQueryIntent,
+    k: int,
+) -> list[RetrievedDocument]:
+    """Retrieve only the document types appropriate for an explicit learning intent."""
+    candidates: list[RetrievedDocument] = []
+    candidate_k = min(max(k * 4, 60), MAX_CANDIDATES_PER_TYPE)
+    for document_type in INTENT_DOCUMENT_TYPES[intent.kind]:
+        response = chroma_store.query(query_embedding, candidate_k, {"type": document_type})
+        candidates.extend(_retrieved_documents(response))
+    latest_index_date = _latest_index_document_date(chroma_store, query_embedding) if intent.recent else None
+    return _select_intent_documents(candidates, intent, k, latest_index_date)
+
+
+def _select_intent_documents(
+    candidates: list[RetrievedDocument],
+    intent: RagQueryIntent,
+    k: int,
+    latest_index_date: date | None = None,
+) -> list[RetrievedDocument]:
+    unique_candidates = _deduplicate_learning_documents(candidates)
+    if not unique_candidates:
+        return []
+
+    if intent.recent:
+        latest_date = latest_index_date or max((_document_date(candidate) for candidate in unique_candidates), default=None)
+        if latest_date is not None:
+            for window_days in (*RECENT_WINDOWS_DAYS, None):
+                filtered = _documents_in_recent_window(unique_candidates, latest_date, window_days)
+                if len(filtered) >= k or window_days is None:
+                    return _sort_intent_documents(filtered, intent)[:k]
+    return _sort_intent_documents(unique_candidates, intent)[:k]
+
+
+def _latest_index_document_date(chroma_store: QueryStore, query_embedding: list[float]) -> date | None:
+    """Read metadata only through the existing query API to anchor 'recent' to index data, not wall-clock time."""
+    response = chroma_store.query(query_embedding, MAX_RECENCY_REFERENCE_CANDIDATES)
+    return max((_document_date(candidate) for candidate in _retrieved_documents(response)), default=None)
+
+
+def _documents_in_recent_window(
+    candidates: list[RetrievedDocument],
+    latest_date: date,
+    window_days: int | None,
+) -> list[RetrievedDocument]:
+    if window_days is None:
+        return candidates
+    cutoff = latest_date - timedelta(days=window_days)
+    return [
+        candidate
+        for candidate in candidates
+        if (candidate_date := _document_date(candidate)) is not None and candidate_date >= cutoff
+    ]
+
+
+def _sort_intent_documents(candidates: list[RetrievedDocument], intent: RagQueryIntent) -> list[RetrievedDocument]:
+    type_order = {document_type: index for index, document_type in enumerate(INTENT_DOCUMENT_TYPES[intent.kind])}
+    if intent.recent:
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                type_order.get(str(candidate.document.metadata.get("type", "")), len(type_order)),
+                -_document_date_ordinal(candidate),
+                candidate.distance,
+            ),
+        )
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            type_order.get(str(candidate.document.metadata.get("type", "")), len(type_order)),
+            candidate.distance,
+        ),
+    )
+
+
+def _document_date(candidate: RetrievedDocument) -> date | None:
+    value = candidate.document.metadata.get("date")
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _document_date_ordinal(candidate: RetrievedDocument) -> int:
+    document_date = _document_date(candidate)
+    return document_date.toordinal() if document_date is not None else 0
+
+
+def _deduplicate_learning_documents(candidates: list[RetrievedDocument]) -> list[RetrievedDocument]:
+    unique: list[RetrievedDocument] = []
+    seen_keys: set[str] = set()
+    for candidate in candidates:
+        key = _learning_document_key(candidate)
+        if key not in seen_keys:
+            unique.append(candidate)
+            seen_keys.add(key)
+    return unique
+
+
+def _learning_document_key(candidate: RetrievedDocument) -> str:
+    text = candidate.document.text
+    document_type = str(candidate.document.metadata.get("type", ""))
+    prefix = "More natural:" if document_type == "more_natural_expression" else "Phrase:"
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return _normalize_phrase_key(line.removeprefix(prefix))
+    return candidate.document.id
+
+
+def _normalize_phrase_key(value: str) -> str:
+    return "".join(character for character in value.casefold().strip() if character.isalnum() or character.isspace()).strip()
 
 
 def _is_expression_focused_query(query: str) -> bool:
