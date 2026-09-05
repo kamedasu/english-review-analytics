@@ -6,14 +6,33 @@ from src.rag.embeddings import EmbeddingError
 from src.rag.models import RagDocument
 from src.rag.retriever import RetrievedDocument
 from src.rag.ui_helpers import (
+    ANALYTICS_TAB_LABEL,
+    ASK_HISTORY_TAB_LABEL,
+    MAIN_TAB_STATE_KEY,
     prepare_rag_answer_request,
     rag_error_message,
+    selected_main_tab,
     should_run_rag_answer,
     source_display,
 )
 
 
 class RagUiHelpersTest(unittest.TestCase):
+    def test_main_tab_defaults_to_analytics_and_preserves_a_valid_selection(self) -> None:
+        state: dict[str, object] = {}
+        self.assertEqual(selected_main_tab(state), ANALYTICS_TAB_LABEL)
+
+        state[MAIN_TAB_STATE_KEY] = ASK_HISTORY_TAB_LABEL
+        self.assertEqual(selected_main_tab(state), ASK_HISTORY_TAB_LABEL)
+
+        # Sync and a normal rerun do not overwrite the tracked tab state.
+        self.assertEqual(selected_main_tab(state), ASK_HISTORY_TAB_LABEL)
+        state[MAIN_TAB_STATE_KEY] = ANALYTICS_TAB_LABEL
+        self.assertEqual(selected_main_tab(state), ANALYTICS_TAB_LABEL)
+
+    def test_main_tab_ignores_an_invalid_stale_widget_value(self) -> None:
+        self.assertEqual(selected_main_tab({MAIN_TAB_STATE_KEY: "stale"}), ANALYTICS_TAB_LABEL)
+
     def test_only_submitted_non_blank_queries_should_run(self) -> None:
         self.assertFalse(should_run_rag_answer(False, "question"))
         self.assertFalse(should_run_rag_answer(True, "  "))

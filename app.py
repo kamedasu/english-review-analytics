@@ -22,7 +22,15 @@ from src.data_loader import load_local_reviews, load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
 from src.rag.answerer import RagAnswerer
 from src.rag.sync_update import RagSyncUpdateOutcome, run_rag_update_after_sync, sync_completed_successfully
-from src.rag.ui_helpers import prepare_rag_answer_request, rag_error_message, source_display
+from src.rag.ui_helpers import (
+    ANALYTICS_TAB_LABEL,
+    ASK_HISTORY_TAB_LABEL,
+    MAIN_TAB_STATE_KEY,
+    prepare_rag_answer_request,
+    rag_error_message,
+    selected_main_tab,
+    source_display,
+)
 
 
 st.set_page_config(page_title="English Review Analytics", layout="wide")
@@ -108,18 +116,25 @@ def main() -> None:
     if any(item.status == "エラー" for item in debug.page_statuses):
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
 
-    analytics_tab, history_tab = st.tabs(["Analytics", "Ask My English History"])
-    with analytics_tab:
-        if not reviews:
-            if any(item.status == "エラー" for item in debug.page_statuses):
-                st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
+    analytics_tab, history_tab = st.tabs(
+        [ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL],
+        default=selected_main_tab(st.session_state),
+        key=MAIN_TAB_STATE_KEY,
+        on_change="rerun",
+    )
+    if analytics_tab.open:
+        with analytics_tab:
+            if not reviews:
+                if any(item.status == "エラー" for item in debug.page_statuses):
+                    st.error("Notionデータを読み込めませんでした。サイドバーのメッセージとNotion API設定を確認してください。")
+                else:
+                    st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
             else:
-                st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
-        else:
-            render_analytics(reviews)
+                render_analytics(reviews)
 
-    with history_tab:
-        render_ask_my_english_history()
+    if history_tab.open:
+        with history_tab:
+            render_ask_my_english_history()
 
 
 def render_analytics(reviews: list) -> None:

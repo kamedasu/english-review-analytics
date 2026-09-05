@@ -16,6 +16,10 @@ TYPE_LABELS = {
     "phrase_card": "Phrase Card",
 }
 
+MAIN_TAB_STATE_KEY = "main_view"
+ANALYTICS_TAB_LABEL = "Analytics"
+ASK_HISTORY_TAB_LABEL = "Ask My English History"
+
 
 @dataclass(frozen=True)
 class SourceDisplay:
@@ -24,6 +28,14 @@ class SourceDisplay:
     date: str
     topic: str
     text: str
+
+
+def selected_main_tab(session_state: MutableMapping[str, object]) -> str:
+    """Return a valid stateful-tab selection without touching RAG input state."""
+    selected = session_state.get(MAIN_TAB_STATE_KEY)
+    if selected in (ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL):
+        return str(selected)
+    return ANALYTICS_TAB_LABEL
 
 
 def should_run_rag_answer(submitted: bool, query: str) -> bool:
