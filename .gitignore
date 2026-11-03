@@ -12,3 +12,6 @@ data/state/
 data/chroma/
 
 .streamlit/secrets.toml
+
+# Verified local data snapshots (not for version control).
+/data_backup_*/

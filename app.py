@@ -221,7 +221,12 @@ def select_period(reviews: list, period_type: str):
 
 
 def render_sync_result(debug, rag_sync_outcome: RagSyncUpdateOutcome | None = None) -> None:
-    st.info("Sync from Notion completed. 通常表示はローカル保存済みデータを使います。")
+    if any(item.status == "エラー" for item in debug.page_statuses):
+        st.error("同期に失敗しました。保存済みデータを確認してください。")
+    elif any(item.held_count for item in debug.page_statuses):
+        st.warning("同期には保留項目があります。既存レビューは保持されています。")
+    else:
+        st.info("Sync from Notion completed. 通常表示は保存済みデータを使います。")
     rows = [
         {
             "month": item.synced_month,
@@ -230,6 +235,7 @@ def render_sync_result(debug, rag_sync_outcome: RagSyncUpdateOutcome | None = No
             "added": item.added_count,
             "updated": item.updated_count,
             "skipped": item.skipped_count,
+            "held": item.held_count,
             "error": item.error,
         }
         for item in debug.page_statuses

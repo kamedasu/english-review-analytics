@@ -57,13 +57,10 @@ def review_state_key(source_page_id: str, review_date: str, review_hash: str) ->
     return f"{source_page_id}:{review_date}:{review_hash}"
 
 
-def has_processed_review(state: FetchState, source_page_id: str, review_date: str, review_hash: str) -> bool:
-    return review_state_key(source_page_id, review_date, review_hash) in state.reviews
-
-
-def update_review_state(state: FetchState, review: Review) -> FetchState:
-    key = review_state_key(review.source_page_id, review.date.isoformat(), review.content_hash)
-    state.reviews[key] = ReviewState(
+def update_current_review_state(state: FetchState, review: Review) -> FetchState:
+    """Track the current processed version; historical state.reviews is read-only."""
+    state.source_bindings[review.source_block_id] = review.review_id
+    state.current_reviews[review.review_id] = ReviewState(
         review_id=review.review_id,
         source_page_id=review.source_page_id,
         source_page_title=review.source_page_title,

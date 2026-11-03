@@ -134,6 +134,14 @@ NOTION_PAGE_IDS=<10月のページID>,<11月のページID>
 
 通常表示はLocal / S3の保存済みデータを読み、`Sync from Notion` を押したときだけ同期します。レビューのハッシュが同じ場合は再処理しません。保存はstateを最後に更新し、保存エラー時は変更したファイルの復元を試みます。複数ファイルの更新はLocal / S3とも単一トランザクションではないため、プロセスの強制終了や復元中のストレージ障害では手動確認が必要です。同じ保存先への同時同期は避けてください。
 
+## レビューの固定IDと移行
+
+ChatGPTが生成したMarkdownをNotion月ページに貼り付ける記録方法は変わりません。ID入力、テンプレート変更、Notionプロパティ追加は不要です。見出しブロックIDはアプリ側で自動取得します。
+
+既存review_idは維持し、新規レビューには `notion:<見出しブロックID>` を使用します。本文ハッシュは現在版の変更検知だけに使うため、A→B→Aの修正も反映します。空見出し・識別の曖昧な項目・過去rawのみの候補は保留し、既存レビューを置き換えません。初回対応付け前に本文を編集した場合も安全のため保留することがあります。
+
+Phase 1では本番データ移行と再同期を実行していません。初回本番同期前に [読み取り専用移行計画](docs/phase1_migration_plan.md) を確認してください。[識別仕様・移行ツール・バックアップ復元手順](docs/review_identity_migration.md) に詳細を記載しています。
+
 ## OpenAI API設定
 
 月次サマリーでOpenAI APIを使う場合は `.env` に `OPENAI_API_KEY` を設定します。
@@ -225,7 +233,7 @@ streamlit run app.py
 
 通常表示ではローカル保存済みの `processed/reviews.json` と `state/state.json` だけを使い、Notion APIは呼びません。
 
-サイドバーの `Sync from Notion` を押したときだけ、指定ページをNotion APIから取得します。同期時は月ページを取得したあとreview単位で `date + content_hash` を照合し、既存reviewはスキップして、新規または変更されたreviewだけを保存します。同期結果には追加件数、更新件数、スキップ件数、同期月が表示されます。
+サイドバーの `Sync from Notion` を押したときだけ、指定ページをNotion APIから取得します。同期時は月ページの見出しブロックIDでreviewを識別し、現在のprocessedにある本文ハッシュと比較します。同日・同種でも別見出しは個別に管理し、既存ブロックの編集では固定review_idを維持します。同期結果には追加・更新・スキップ・保留件数と同期月が表示されます。
 
 SyncとReview保存が成功した後は、保存済みReviewをsource of truthとしてIncremental RAG Index Updateも自動実行します。差分がなければEmbeddingは呼ばれません。RAG更新が失敗しても保存済みReviewはrollbackせず安全に維持され、embedding model／schemaの不一致時にも自動full rebuildは行いません。Ask My English Historyの表示・質問や通常の画面rerunではindexを更新しません。
 

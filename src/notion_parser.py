@@ -49,6 +49,9 @@ def parse_review(
     source_page_id: str = "",
     source_page_title: str = "",
     warnings: list[str] | None = None,
+    *,
+    fixed_review_id: str = "",
+    source_block_id: str = "",
 ) -> Review | None:
     review_date = _extract_review_date(markdown)
     if review_date is None:
@@ -58,7 +61,7 @@ def parse_review(
     body_before_cards = re.split(r"(?im)^##\s*Phrase\s+Cards\s*$", markdown, maxsplit=1)[0]
     fields = _parse_review_fields(body_before_cards)
     review_hash = content_hash(markdown)
-    review_id = f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
+    review_id = fixed_review_id or f"{source_page_id or 'local'}:{review_date.isoformat()}:{review_hash[:12]}"
     review_type = _extract_review_type(markdown)
 
     phrase_cards = _parse_phrase_cards(markdown, review_id, review_date)
@@ -73,6 +76,7 @@ def parse_review(
 
     return Review(
         review_id=review_id,
+        source_block_id=source_block_id,
         source_page_id=source_page_id,
         source_page_title=source_page_title,
         review_type=review_type,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import tempfile
 
 from src.storage.base import Storage, StorageError
 
@@ -22,11 +24,23 @@ class LocalStorage(Storage):
 
     def save_text(self, path: str, content: str) -> None:
         target = self._path(path)
+        temporary = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
         except OSError as exc:
             raise StorageError(f"Could not write local storage file {path}: {exc}") from exc
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass  # Never obscure a failed write/replace with cleanup failure.
 
     def list_files(self, prefix: str) -> list[str]:
         root = self._path(prefix)

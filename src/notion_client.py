@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.notion_parser import REVIEW_HEADER_RE, split_reviews
+
 import requests
 
 
 NOTION_VERSION = "2022-06-28"
+
+
+@dataclass(frozen=True)
+class NotionReviewBlock:
+    source_block_id: str
+    markdown: str
 
 
 @dataclass(frozen=True)
@@ -14,6 +22,7 @@ class NotionPage:
     title: str
     last_edited_time: str | None
     markdown: str
+    review_blocks: tuple[NotionReviewBlock, ...] = ()
 
 
 class NotionClientError(RuntimeError):
@@ -30,11 +39,13 @@ class NotionClient:
     def fetch_page_as_markdown(self, page_id: str) -> NotionPage:
         page = self._request("GET", f"/pages/{page_id}")
         blocks = self._fetch_all_blocks(page_id)
+        markdown, review_blocks = blocks_to_review_markdown(blocks)
         return NotionPage(
             page_id=page_id,
             title=_extract_title(page),
             last_edited_time=page.get("last_edited_time"),
-            markdown=blocks_to_markdown(blocks),
+            markdown=markdown,
+            review_blocks=review_blocks,
         )
 
     def _fetch_all_blocks(self, block_id: str) -> list[dict]:
@@ -76,50 +87,49 @@ class NotionClient:
 
 
 def blocks_to_markdown(blocks: list[dict]) -> str:
-    lines: list[str] = []
-    for block in blocks:
-        lines.extend(_block_to_lines(block))
-    return "\n".join(lines).strip()
+    return blocks_to_review_markdown(blocks)[0]
 
 
-def _block_to_lines(block: dict) -> list[str]:
+def blocks_to_review_markdown(blocks: list[dict]) -> tuple[str, tuple[NotionReviewBlock, ...]]:
+    lines = [line for block in blocks for line in _render_block(block)]
+    markdown = "\n".join(text for text, _ in lines).strip()
+    # Match the parser's exact boundaries, but trust IDs only on real heading_1 blocks.
+    sources = []
+    for text, block_id in lines:
+        for line in text.split("\n"):
+            if REVIEW_HEADER_RE.match(line):
+                sources.append(block_id)
+    chunks = split_reviews(markdown)
+    if len(sources) != len(chunks) or any(not source for source in sources):
+        # An apparent review header inside code/plain text can truncate an earlier
+        # real review. Hold the whole page rather than update it with partial text.
+        return markdown, tuple(NotionReviewBlock("", chunk) for chunk in chunks)
+    return markdown, tuple(NotionReviewBlock(block_id, chunk) for block_id, chunk in zip(sources, chunks))
+
+
+def _render_block(block: dict, indent: str = "") -> list[tuple[str, str]]:
     block_type = block.get("type")
     data = block.get(block_type, {})
     text = _rich_text_to_plain(data.get("rich_text", []))
-    lines: list[str] = []
-
-    if block_type == "heading_1":
-        lines.append(f"# {text}")
-    elif block_type == "heading_2":
-        lines.append(f"## {text}")
-    elif block_type == "heading_3":
-        lines.append(f"### {text}")
-    elif block_type == "bulleted_list_item":
-        lines.append(f"- {text}")
-        lines.extend(_children_to_indented_lines(block, indent="  "))
-    elif block_type == "numbered_list_item":
-        lines.append(f"- {text}")
-        lines.extend(_children_to_indented_lines(block, indent="  "))
-    elif block_type == "paragraph":
-        if text:
-            lines.append(text)
+    own = []
+    if block_type in {"heading_1", "heading_2", "heading_3"}:
+        own = [f"{'#' * int(block_type[-1])} {text}"]
+    elif block_type in {"bulleted_list_item", "numbered_list_item"}:
+        own = [f"- {text}"]
+    elif block_type == "paragraph" and text:
+        own = [text]
     elif block_type == "to_do":
-        checked = "x" if data.get("checked") else " "
-        lines.append(f"- [{checked}] {text}")
+        own = [f"- [{'x' if data.get('checked') else ' '}] {text}"]
     elif block_type == "quote":
-        lines.append(f"> {text}")
+        own = [f"> {text}"]
     elif block_type == "code":
-        language = data.get("language", "")
-        lines.extend([f"```{language}", text, "```"])
-
-    return lines
-
-
-def _children_to_indented_lines(block: dict, indent: str) -> list[str]:
-    lines: list[str] = []
+        own = [f"```{data.get('language', '')}", text, "```"]
+    block_id = block.get("id")
+    source = block_id if block_type == "heading_1" and not indent and isinstance(block_id, str) else ""
+    lines = [(indent + line, source) for line in own]
+    child_indent = indent + "  " if block_type in {"bulleted_list_item", "numbered_list_item"} else indent
     for child in block.get("children", []):
-        for line in _block_to_lines(child):
-            lines.append(f"{indent}{line}")
+        lines.extend(_render_block(child, child_indent))
     return lines
 
 

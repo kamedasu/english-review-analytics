@@ -27,6 +27,7 @@ class MoreNaturalExpression(BaseModel):
 
 class Review(BaseModel):
     review_id: str
+    source_block_id: str = ""
     source_page_id: str = ""
     source_page_title: str = ""
     review_type: str = "normal"
@@ -78,5 +79,9 @@ class ReviewState(BaseModel):
 
 
 class FetchState(BaseModel):
+    identity_version: int = 1
     pages: dict[str, PageState] = Field(default_factory=dict)
     reviews: dict[str, ReviewState] = Field(default_factory=dict)
+    source_bindings: dict[str, str] = Field(default_factory=dict)
+    current_reviews: dict[str, ReviewState] = Field(default_factory=dict)
+    pending_sources: dict[str, str] = Field(default_factory=dict)

@@ -11,12 +11,8 @@ from src.notion_client import NotionClient, NotionClientError
 from src.notion_parser import parse_review, split_reviews
 from src.storage import StorageError, get_storage
 from src.storage.base import Storage
-from src.storage.state_store import (
-    has_processed_review,
-    update_page_state,
-    update_review_state,
-)
-from src.utils.dates import parse_date
+from src.storage.state_store import update_page_state
+from src.review_identity import sync_review_blocks
 from src.utils.hashing import content_hash
 
 
@@ -34,6 +30,7 @@ class PageLoadStatus:
     added_count: int = 0
     updated_count: int = 0
     skipped_count: int = 0
+    held_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -93,12 +90,20 @@ def sync_reviews_from_notion() -> LoadResult:
     try:
         client = NotionClient(settings.notion_api_key)
         months = {}
+        seen_sources = set()
         for page_id in page_ids:
             page = client.fetch_page_as_markdown(page_id)
             month = _month_from_title(page.title)
             if month in months:
                 raise ValueError(f"対象月 {month} が複数のページIDで指定されています。同期を中止しました。")
             months[month] = page_id
+            if [block.markdown for block in page.review_blocks] != split_reviews(page.markdown):
+                raise ValueError("Markdownと見出しブロックの対応が不一致です。同期を中止しました。")
+            for block in page.review_blocks:
+                if block.source_block_id and block.source_block_id in seen_sources:
+                    raise ValueError("見出しブロックIDが重複しています。同期を中止しました。")
+                if block.source_block_id:
+                    seen_sources.add(block.source_block_id)
             pages.append(page)
     except (NotionClientError, ValueError) as exc:
         error = str(exc)
@@ -111,12 +116,6 @@ def sync_reviews_from_notion() -> LoadResult:
             ),
         )
 
-    # Backfill missing review keys only for selected pages; preserve historical state.
-    for review in cached_reviews:
-        if review.source_page_id in page_ids and not has_processed_review(
-            state, review.source_page_id, review.date.isoformat(), review.content_hash
-        ):
-            update_review_state(state, review)
     all_reviews = cached_reviews
     page_statuses: list[PageLoadStatus] = []
     raw_writes = []
@@ -126,41 +125,60 @@ def sync_reviews_from_notion() -> LoadResult:
         raw_markdown_path = f"raw/{_safe_filename(page.title)}_{page.page_id}.md"
         raw_writes.append((raw_markdown_path, page.markdown))
         parser_warnings: list[str] = []
-        sync_result = _sync_page_reviews(
-            page_id=page.page_id,
-            page_title=page.title,
-            markdown=page.markdown,
-            existing_reviews=all_reviews,
-            state=state,
-            parser_warnings=parser_warnings,
-        )
-        all_reviews = sync_result["reviews"]
+        try:
+            previous_page = state.pages.get(page.page_id)
+            old_title = previous_page.title if previous_page else page.title
+            old_path = f"raw/{_safe_filename(old_title)}_{page.page_id}.md"
+            historical_hashes = {
+                content_hash(chunk) for chunk in split_reviews(storage.load_text(old_path))
+            } if storage.exists(old_path) else set()
+            sync_result = sync_review_blocks(
+                page.page_id, page.title, page.review_blocks, all_reviews, state, parser_warnings,
+                historical_hashes=historical_hashes, parser=parse_review,
+            )
+        except (StorageError, ValueError) as exc:
+            return LoadResult(
+                reviews=sorted(cached_reviews, key=lambda review: review.date),
+                debug=LoadDebugInfo(sync_requested=True,
+                    page_statuses=[PageLoadStatus(page_id=page.page_id, status="エラー", error=str(exc))],
+                    messages=[str(exc)]),
+            )
+        all_reviews = sync_result.reviews
+        raw_writes.append((f"raw/{_safe_filename(page.title)}_{page.page_id}.identity.json", json.dumps({
+            "identity_version": 2, "page_id": page.page_id, "page_hash": page_hash,
+            "reviews": [{"source_block_id": block.source_block_id, "content_hash": content_hash(block.markdown)} for block in page.review_blocks],
+            "held": sync_result.held,
+        }, ensure_ascii=False, indent=2)))
         update_page_state(state, page.page_id, page.title, page.last_edited_time, page_hash)
         messages.append(
-            f"{page.title}: added {sync_result['added_count']}, "
-            f"updated {sync_result['updated_count']}, skipped {sync_result['skipped_count']}"
+            f"{page.title}: added {sync_result.added_count}, "
+            f"updated {sync_result.updated_count}, skipped {sync_result.skipped_count}, held {len(sync_result.held)}"
         )
         messages.extend(parser_warnings)
         page_statuses.append(
             PageLoadStatus(
                 page_id=page.page_id,
                 title=page.title,
-                status="同期済み",
+                status="保留あり" if sync_result.held else "同期済み",
                 review_count=_count_reviews_for_page(all_reviews, page.page_id),
                 last_edited_time=page.last_edited_time,
                 raw_markdown_path=str(raw_markdown_path),
                 parser_warnings=parser_warnings,
                 synced_month=_month_from_title(page.title),
-                added_count=sync_result["added_count"],
-                updated_count=sync_result["updated_count"],
-                skipped_count=sync_result["skipped_count"],
+                added_count=sync_result.added_count,
+                updated_count=sync_result.updated_count,
+                skipped_count=sync_result.skipped_count,
+                held_count=len(sync_result.held),
             )
         )
 
     # Save state last: a failed raw/processed write must never mark a sync as complete.
     try:
         writes = raw_writes + [
-            ("processed/reviews.json", json.dumps([review.model_dump(mode="json") for review in all_reviews], ensure_ascii=False, indent=2)),
+            ("processed/reviews.json", json.dumps([
+                review.model_dump(mode="json", exclude={"source_block_id"} if not review.source_block_id else set())
+                for review in all_reviews
+            ], ensure_ascii=False, indent=2)),
             ("state/state.json", json.dumps(state.model_dump(mode="json"), ensure_ascii=False, indent=2)),
         ]
         _save_sync(storage, writes)
@@ -188,89 +206,6 @@ def sync_reviews_from_notion() -> LoadResult:
             messages=messages,
         ),
     )
-
-
-def _sync_page_reviews(
-    page_id: str,
-    page_title: str,
-    markdown: str,
-    existing_reviews: list[Review],
-    state,
-    parser_warnings: list[str],
-) -> dict:
-    reviews = list(existing_reviews)
-    added_count = 0
-    updated_count = 0
-    skipped_count = 0
-
-    for chunk in split_reviews(markdown):
-        chunk_hash = content_hash(chunk)
-        review_date = _review_date_from_chunk(chunk)
-        if not review_date:
-            parser_warnings.append(f"{page_title}: review date not found in a chunk.")
-            continue
-        if has_processed_review(state, page_id, review_date, chunk_hash) and not _needs_schema_refresh(
-            reviews,
-            page_id,
-            review_date,
-            chunk,
-        ):
-            skipped_count += 1
-            continue
-
-        review = parse_review(chunk, page_id, page_title, parser_warnings)
-        if review is None:
-            continue
-
-        previous_count = len(reviews)
-        reviews = [
-            item
-            for item in reviews
-            if not (
-                item.source_page_id == page_id
-                and item.date == review.date
-                and getattr(item, "review_type", "normal") == getattr(review, "review_type", "normal")
-            )
-        ]
-        if len(reviews) < previous_count:
-            updated_count += previous_count - len(reviews)
-        else:
-            added_count += 1
-        reviews.append(review)
-        update_review_state(state, review)
-
-    return {
-        "reviews": reviews,
-        "added_count": added_count,
-        "updated_count": updated_count,
-        "skipped_count": skipped_count,
-    }
-
-
-def _review_date_from_chunk(chunk: str) -> str:
-    date_line = re.search(r"(?m)^-\s*Date:\s*(.+?)\s*$", chunk)
-    if date_line:
-        parsed = parse_date(date_line.group(1))
-        if parsed:
-            return parsed.isoformat()
-    header = re.search(
-        r"(?im)^#\s+(\d{4}[-/]\d{1,2}[-/]\d{1,2})\s+(?:line\s+english\s+review|review)\b",
-        chunk,
-    )
-    if header:
-        parsed = parse_date(header.group(1).replace("/", "-"))
-        if parsed:
-            return parsed.isoformat()
-    return ""
-
-
-def _needs_schema_refresh(reviews: list[Review], page_id: str, review_date: str, chunk: str) -> bool:
-    if "Words and phrases actually used" not in chunk:
-        return False
-    for review in reviews:
-        if review.source_page_id == page_id and review.date.isoformat() == review_date:
-            return not bool(getattr(review, "words_and_phrases_actually_used", []) or [])
-    return False
 
 
 def _month_from_title(title: str) -> str:

@@ -17,6 +17,7 @@ from src.storage.s3_storage import S3Storage
 
 def migration_files(data_dir: Path) -> list[Path]:
     candidates = list((data_dir / "raw").glob("*.md"))
+    candidates += list((data_dir / "raw").glob("*.identity.json"))
     candidates += [data_dir / "processed" / "reviews.json", data_dir / "state" / "state.json"]
     return [path for path in candidates if path.is_file() and path.name != "sample_reviews.md"]
 
