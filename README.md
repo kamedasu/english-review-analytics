@@ -68,9 +68,6 @@ Notion APIを使う場合は `.env` に設定します。
 ```env
 NOTION_API_KEY=secret_xxx
 NOTION_PAGE_IDS=page_id_1,page_id_2
-NOTION_ACTIVE_PAGE_IDS=active_month_page_id
-ACTIVE_MONTHS=2026-05
-ARCHIVED_MONTHS=2026-04
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_SUMMARY_RETRY_COUNT=3
@@ -111,7 +108,7 @@ S3_PREFIX=data
 AWS_REGION=ap-northeast-1
 ```
 
-AWS認証情報は `.env` には書かず、AWS CLI / boto3 の通常の認証チェーンを利用します。通常表示では保存済みデータだけを読み、Notion APIは呼びません。`Sync from Notion` 実行時だけactive月を同期し、archived月はlocal/S3を問わず保存済みデータだけを利用します。localとS3でアプリ機能の差はありません。
+AWS認証情報は `.env` には書かず、AWS CLI / boto3 の通常の認証チェーンを利用します。通常表示では保存済みデータだけを読み、Notion APIは呼びません。`Sync from Notion` 実行時だけ指定ページを同期し、対象外の月はlocal/S3を問わず保存済みデータだけを利用します。localとS3でアプリ機能の差はありません。
 
 ローカルの既存データを一度だけS3へコピーするには、以下を実行します。`sample_reviews.md` は対象外で、同じS3キーが既にある場合は上書きします。ローカルファイルは削除しません。
 
@@ -120,22 +117,22 @@ python scripts/migrate_local_to_s3.py --dry-run
 python scripts/migrate_local_to_s3.py
 ```
 
-## Active / Archived 月
+## 同期対象の月の切り替え
 
-Notion API呼び出しを減らすため、月をactiveとarchivedに分けます。
-
-- `archived_months`: 確定済みの月です。通常表示でもSyncでもNotion APIを見に行きません
-- `active_months`: 追記される可能性がある月です。通常表示ではローカル保存済みデータだけを使い、`Sync from Notion` を押したときだけNotion APIを見に行きます
-
-推奨設定は、同期対象のactive月ページだけを `NOTION_ACTIVE_PAGE_IDS` に入れることです。
+同期対象は `NOTION_PAGE_IDS` のみで指定します。ページタイトルは有効な年月の `YYYY-MM` 形式（例: `2026-11`）にしてください。複数ページはカンマ区切りで指定できます。同じ月の異なるページ、不正なタイトル、APIエラーは保存前に検出し、同期全体を中止します。
 
 ```env
-NOTION_ACTIVE_PAGE_IDS=active_month_page_id
-ACTIVE_MONTHS=2026-05
-ARCHIVED_MONTHS=2026-04
+# 11月
+NOTION_PAGE_IDS=<11月のページID>
+# 12月に切り替える場合
+NOTION_PAGE_IDS=<12月のページID>
+# 複数月を同期する場合
+NOTION_PAGE_IDS=<10月のページID>,<11月のページID>
 ```
 
-`NOTION_ACTIVE_PAGE_IDS` が未設定の場合は、既存stateから `ACTIVE_MONTHS` に一致するページIDを探します。初回やstateがない環境では特定できないため、`NOTION_ACTIVE_PAGE_IDS` の設定を推奨します。
+月を切り替える前に、前月の最終同期を行ってください。切り替え後は指定したページだけが同期され、対象外のページにはNotion APIでアクセスしません。保存済みの過去月のraw、processed、state、レビュー単位の差分同期情報を保持し、引き続き表示・分析に利用します。未指定の場合はAPIキーの有無によらずNotion APIを呼ばず、保存済みデータのみ利用します。
+
+通常表示はLocal / S3の保存済みデータを読み、`Sync from Notion` を押したときだけ同期します。レビューのハッシュが同じ場合は再処理しません。保存はstateを最後に更新し、保存エラー時は変更したファイルの復元を試みます。複数ファイルの更新はLocal / S3とも単一トランザクションではないため、プロセスの強制終了や復元中のストレージ障害では手動確認が必要です。同じ保存先への同時同期は避けてください。
 
 ## OpenAI API設定
 
@@ -228,7 +225,7 @@ streamlit run app.py
 
 通常表示ではローカル保存済みの `processed/reviews.json` と `state/state.json` だけを使い、Notion APIは呼びません。
 
-サイドバーの `Sync from Notion` を押したときだけ、active月ページをNotion APIから取得します。同期時は月ページを取得したあとreview単位で `date + content_hash` を照合し、既存reviewはスキップして、新規または変更されたreviewだけを保存します。同期結果には追加件数、更新件数、スキップ件数、同期月が表示されます。
+サイドバーの `Sync from Notion` を押したときだけ、指定ページをNotion APIから取得します。同期時は月ページを取得したあとreview単位で `date + content_hash` を照合し、既存reviewはスキップして、新規または変更されたreviewだけを保存します。同期結果には追加件数、更新件数、スキップ件数、同期月が表示されます。
 
 SyncとReview保存が成功した後は、保存済みReviewをsource of truthとしてIncremental RAG Index Updateも自動実行します。差分がなければEmbeddingは呼ばれません。RAG更新が失敗しても保存済みReviewはrollbackせず安全に維持され、embedding model／schemaの不一致時にも自動full rebuildは行いません。Ask My English Historyの表示・質問や通常の画面rerunではindexを更新しません。
 
@@ -385,7 +382,7 @@ Notion APIから取得したブロックは `src/notion_client.py` でMarkdown�
 
 ## Notion実データ確認手順
 
-1. `.env` に `NOTION_API_KEY` と `NOTION_ACTIVE_PAGE_IDS` を設定する
+1. `.env` に `NOTION_API_KEY` と `NOTION_PAGE_IDS` を設定する
 2. `streamlit run app.py` で起動する
 3. `Sync from Notion` を押す
 4. 画面上部に警告が出ていないことを確認する
@@ -393,7 +390,7 @@ Notion APIから取得したブロックは `src/notion_client.py` でMarkdown�
 取得に失敗した場合は、サイドバーのメッセージと `data/raw/` を確認します。
 
 - Notion APIキーが正しいか
-- `NOTION_ACTIVE_PAGE_IDS` が正しいか
+- `NOTION_PAGE_IDS` が正しいか
 - Notion Integrationに対象ページの権限があるか
 - `data/raw/` に保存されたMarkdownが期待する構造になっているか
 

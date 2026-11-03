@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import json
 import re
 
 from src.config import get_settings
@@ -67,11 +68,11 @@ def load_local_reviews() -> LoadResult:
 
 def load_or_fetch_reviews(refresh: bool = False) -> LoadResult:
     if refresh:
-        return sync_active_reviews_from_notion()
+        return sync_reviews_from_notion()
     return load_local_reviews()
 
 
-def sync_active_reviews_from_notion() -> LoadResult:
+def sync_reviews_from_notion() -> LoadResult:
     messages: list[str] = []
     settings = get_settings()
     try:
@@ -81,47 +82,49 @@ def sync_active_reviews_from_notion() -> LoadResult:
     except (StorageError, ValueError) as exc:
         return _storage_error_result(exc, sync_requested=True)
 
-    if not settings.notion_api_key:
-        messages.append("NOTION_API_KEY が設定されていません。")
-    active_page_ids = _active_page_ids(settings, state, messages)
-    if not active_page_ids and not messages:
-        messages.append("NOTION_ACTIVE_PAGE_IDS または NOTION_PAGE_IDS が設定されていません。")
-    if messages:
+    page_ids = list(dict.fromkeys(settings.notion_page_ids))
+    if not page_ids:
+        return LoadResult(
+            reviews=sorted(cached_reviews, key=lambda review: review.date),
+            debug=LoadDebugInfo(messages=["NOTION_PAGE_IDS が未指定のため、保存済みデータのみ表示します。"]),
+        )
+
+    pages = []
+    try:
+        client = NotionClient(settings.notion_api_key)
+        months = {}
+        for page_id in page_ids:
+            page = client.fetch_page_as_markdown(page_id)
+            month = _month_from_title(page.title)
+            if month in months:
+                raise ValueError(f"対象月 {month} が複数のページIDで指定されています。同期を中止しました。")
+            months[month] = page_id
+            pages.append(page)
+    except (NotionClientError, ValueError) as exc:
+        error = str(exc)
         return LoadResult(
             reviews=sorted(cached_reviews, key=lambda review: review.date),
             debug=LoadDebugInfo(
                 sync_requested=True,
-                page_statuses=[PageLoadStatus(page_id="", status="エラー", error="\n".join(messages))],
-                messages=messages,
+                page_statuses=[PageLoadStatus(page_id="", status="エラー", error=error)],
+                messages=[error],
             ),
         )
 
+    # Backfill missing review keys only for selected pages; preserve historical state.
     for review in cached_reviews:
-        update_review_state(state, review)
-    client = NotionClient(settings.notion_api_key)
+        if review.source_page_id in page_ids and not has_processed_review(
+            state, review.source_page_id, review.date.isoformat(), review.content_hash
+        ):
+            update_review_state(state, review)
     all_reviews = cached_reviews
     page_statuses: list[PageLoadStatus] = []
+    raw_writes = []
 
-    for page_id in active_page_ids:
-        try:
-            page = client.fetch_page_as_markdown(page_id)
-        except NotionClientError as exc:
-            error = str(exc)
-            messages.append(error)
-            page_statuses.append(PageLoadStatus(page_id=page_id, status="エラー", error=error))
-            continue
-
+    for page in pages:
         page_hash = content_hash(page.markdown)
-        try:
-            raw_markdown_path = _save_raw_markdown(storage, page.page_id, page.title, page.markdown)
-        except StorageError as exc:
-            error = str(exc)
-            messages.append(error)
-            page_statuses.append(PageLoadStatus(page_id=page.page_id, title=page.title, status="エラー", error=error))
-            return LoadResult(
-                reviews=sorted(cached_reviews, key=lambda review: review.date),
-                debug=LoadDebugInfo(sync_requested=True, page_statuses=page_statuses, messages=messages),
-            )
+        raw_markdown_path = f"raw/{_safe_filename(page.title)}_{page.page_id}.md"
+        raw_writes.append((raw_markdown_path, page.markdown))
         parser_warnings: list[str] = []
         sync_result = _sync_page_reviews(
             page_id=page.page_id,
@@ -147,7 +150,7 @@ def sync_active_reviews_from_notion() -> LoadResult:
                 last_edited_time=page.last_edited_time,
                 raw_markdown_path=str(raw_markdown_path),
                 parser_warnings=parser_warnings,
-                synced_month=_month_from_title_or_reviews(page.title, all_reviews, page.page_id),
+                synced_month=_month_from_title(page.title),
                 added_count=sync_result["added_count"],
                 updated_count=sync_result["updated_count"],
                 skipped_count=sync_result["skipped_count"],
@@ -156,11 +159,15 @@ def sync_active_reviews_from_notion() -> LoadResult:
 
     # Save state last: a failed raw/processed write must never mark a sync as complete.
     try:
-        _save_reviews(storage, all_reviews)
-        _save_state(storage, state)
+        writes = raw_writes + [
+            ("processed/reviews.json", json.dumps([review.model_dump(mode="json") for review in all_reviews], ensure_ascii=False, indent=2)),
+            ("state/state.json", json.dumps(state.model_dump(mode="json"), ensure_ascii=False, indent=2)),
+        ]
+        _save_sync(storage, writes)
     except StorageError as exc:
         messages.append(str(exc))
         page_statuses.append(PageLoadStatus(page_id="", status="エラー", error=str(exc)))
+        all_reviews = cached_reviews
 
     if not all_reviews:
         messages.append("レビューを取得できませんでした。サイドバーの取得メッセージとdata/raw/を確認してください。")
@@ -240,36 +247,6 @@ def _sync_page_reviews(
     }
 
 
-def _active_page_ids(settings, state, messages: list[str]) -> list[str]:
-    if settings.notion_active_page_ids:
-        return settings.notion_active_page_ids
-    if settings.active_months and settings.notion_page_ids:
-        active_months = set(settings.active_months)
-        matched_page_ids = [
-            page_id
-            for page_id in settings.notion_page_ids
-            if _month_from_page_state(state, page_id) in active_months
-        ]
-        if matched_page_ids:
-            return matched_page_ids
-        messages.append(
-            "ACTIVE_MONTHS が設定されていますが、stateからactive月のpage_idを特定できませんでした。"
-            " NOTION_ACTIVE_PAGE_IDS を設定してください。"
-        )
-        return []
-    return settings.notion_page_ids
-
-
-def _month_from_page_state(state, page_id: str) -> str:
-    page_state = state.pages.get(page_id)
-    if not page_state:
-        return ""
-    title_match = re.search(r"(20\d{2})[-_/年. ]?(0?[1-9]|1[0-2])", page_state.title)
-    if not title_match:
-        return ""
-    return f"{title_match.group(1)}-{int(title_match.group(2)):02d}"
-
-
 def _review_date_from_chunk(chunk: str) -> str:
     date_line = re.search(r"(?m)^-\s*Date:\s*(.+?)\s*$", chunk)
     if date_line:
@@ -296,20 +273,37 @@ def _needs_schema_refresh(reviews: list[Review], page_id: str, review_date: str,
     return False
 
 
-def _month_from_title_or_reviews(title: str, reviews: list[Review], page_id: str) -> str:
-    title_match = re.search(r"(20\d{2})[-_/年. ]?(0?[1-9]|1[0-2])", title)
-    if title_match:
-        return f"{title_match.group(1)}-{int(title_match.group(2)):02d}"
-    page_reviews = [review for review in reviews if review.source_page_id == page_id]
-    if page_reviews:
-        return page_reviews[-1].date.strftime("%Y-%m")
-    return ""
+def _month_from_title(title: str) -> str:
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}", title):
+        try:
+            date(int(title[:4]), int(title[5:]), 1)
+            return title
+        except ValueError:
+            pass
+    raise ValueError(f"Notionページタイトル {title!r} は有効な YYYY-MM 形式ではありません。同期を中止しました。")
 
 
-def _save_raw_markdown(storage: Storage, page_id: str, title: str, markdown: str) -> str:
-    path = f"raw/{_safe_filename(title or page_id)}_{page_id}.md"
-    storage.save_text(path, markdown)
-    return path
+def _save_sync(storage: Storage, writes: list[tuple[str, str]]) -> None:
+    # Read backups before any writes. State is committed last on both backends.
+    backups = {path: storage.load_text(path) if storage.exists(path) else None for path, _ in writes}
+    attempted = []
+    try:
+        for path, content in writes:
+            attempted.append(path)
+            storage.save_text(path, content)
+    except StorageError as exc:
+        rollback_errors = []
+        for path in reversed(attempted):
+            try:
+                if backups[path] is None:
+                    storage.delete(path)
+                else:
+                    storage.save_text(path, backups[path])
+            except StorageError:
+                rollback_errors.append(path)
+        if rollback_errors:
+            raise StorageError(f"同期の保存に失敗し、復元できなかったファイルがあります: {', '.join(rollback_errors)}") from exc
+        raise
 
 
 def _load_reviews(storage: Storage) -> list[Review]:

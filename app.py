@@ -91,7 +91,7 @@ def main() -> None:
             cached_load_reviews.clear()
             st.session_state["cache_cleared"] = True
 
-    with st.spinner("Syncing active month from Notion..." if sync else "Loading local reviews..."):
+    with st.spinner("Syncing selected pages from Notion..." if sync else "Loading local reviews..."):
         load_result = load_or_fetch_reviews(refresh=True) if sync else cached_load_reviews(False)
 
     reviews = load_result.reviews
