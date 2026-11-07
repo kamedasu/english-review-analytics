@@ -19,6 +19,7 @@ TYPE_LABELS = {
 MAIN_TAB_STATE_KEY = "main_view"
 ANALYTICS_TAB_LABEL = "Analytics"
 ASK_HISTORY_TAB_LABEL = "Ask My English History"
+COACH_TAB_LABEL = "AI Learning Coach"
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class SourceDisplay:
 def selected_main_tab(session_state: MutableMapping[str, object]) -> str:
     """Return a valid stateful-tab selection without touching RAG input state."""
     selected = session_state.get(MAIN_TAB_STATE_KEY)
-    if selected in (ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL):
+    if selected in (ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL, COACH_TAB_LABEL):
         return str(selected)
     return ANALYTICS_TAB_LABEL
 

@@ -102,12 +102,12 @@ def generate_period_summary(
                 f"(last_status={exc.status_code}, retries={retry_count})。"
             ),
         )
-    except (requests.RequestException, ValueError, KeyError) as exc:
+    except (requests.RequestException, ValueError, KeyError):
         return MonthlySummaryResult(
             text=fallback_text,
             source="rule-based",
             model=settings.openai_model,
-            warning=f"OpenAI APIによるサマリー生成に失敗したため、rule-based summaryを表示しています: {exc}",
+            warning="OpenAI APIによるサマリー生成に失敗したため、rule-based summaryを表示しています。モデル名・利用権限・API設定を確認してください。",
         )
 
     return MonthlySummaryResult(text=text, source="llm", model=settings.openai_model)
@@ -149,13 +149,13 @@ def _generate_openai_summary(
         if response.status_code not in {500, 502, 503, 504}:
             break
         if attempt >= retry_count:
-            raise RetryableOpenAIError(response.status_code, response.text[:500])
+            raise RetryableOpenAIError(response.status_code, "server error")
         time.sleep(2**attempt)
 
     if response is None:
         raise ValueError("OpenAI response was not created.")
     if response.status_code >= 400:
-        raise ValueError(f"{response.status_code}: {response.text[:500]}")
+        raise ValueError(f"OpenAI API status {response.status_code}")
 
     data = response.json()
     text = _extract_response_text(data)

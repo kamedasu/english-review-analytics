@@ -20,6 +20,7 @@ from src.analytics import (
 )
 from src.data_loader import load_local_reviews, load_or_fetch_reviews
 from src.llm_summary import generate_period_summary
+from src.coach.ui import COACH_TAB_LABEL, render_learning_coach
 from src.rag.answerer import RagAnswerer
 from src.rag.sync_update import RagSyncUpdateOutcome, run_rag_update_after_sync, sync_completed_successfully
 from src.rag.ui_helpers import (
@@ -116,8 +117,8 @@ def main() -> None:
     if any(item.status == "エラー" for item in debug.page_statuses):
         st.warning("一部または全てのNotionページを取得できませんでした。表示中のデータはローカルキャッシュを含む可能性があります。")
 
-    analytics_tab, history_tab = st.tabs(
-        [ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL],
+    analytics_tab, history_tab, coach_tab = st.tabs(
+        [ANALYTICS_TAB_LABEL, ASK_HISTORY_TAB_LABEL, COACH_TAB_LABEL],
         default=selected_main_tab(st.session_state),
         key=MAIN_TAB_STATE_KEY,
         on_change="rerun",
@@ -135,6 +136,10 @@ def main() -> None:
     if history_tab.open:
         with history_tab:
             render_ask_my_english_history()
+
+    if coach_tab.open:
+        with coach_tab:
+            render_learning_coach(reviews)
 
 
 def render_analytics(reviews: list) -> None:

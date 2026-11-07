@@ -10,6 +10,11 @@ import os
 load_dotenv()
 
 
+# Compatibility defaults: changing OPENAI_MODEL never implicitly changes RAG/embedding.
+DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+DEFAULT_RAG_MODEL = "gpt-4.1-mini"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("DATA_ROOT_DIR", "")).expanduser() if os.getenv("DATA_ROOT_DIR") else ROOT_DIR / "data"
 
@@ -40,10 +45,10 @@ def get_settings() -> Settings:
         notion_api_key=os.getenv("NOTION_API_KEY", ""),
         notion_page_ids=_split_csv(os.getenv("NOTION_PAGE_IDS", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        openai_model=_model_setting("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
         openai_summary_retry_count=_safe_int(os.getenv("OPENAI_SUMMARY_RETRY_COUNT", ""), default=3),
-        openai_rag_model=os.getenv("OPENAI_RAG_MODEL", "gpt-4.1-mini"),
-        openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        openai_rag_model=_model_setting("OPENAI_RAG_MODEL", DEFAULT_RAG_MODEL),
+        openai_embedding_model=_model_setting("OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         rag_embedding_batch_size=_safe_positive_int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", ""), default=64),
         rag_chroma_dir=_rag_chroma_dir(),
         rag_collection_name=os.getenv("RAG_COLLECTION_NAME", "english_review_documents").strip()
@@ -56,6 +61,12 @@ def get_settings() -> Settings:
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", ""),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", ""),
     )
+
+
+def _model_setting(name: str, default: str) -> str:
+    # Blank example entries behave like unset variables. Availability/access is
+    # validated by the API, not an allowlist that would reject future model IDs.
+    return os.getenv(name, "").strip() or default
 
 
 def _split_csv(value: str) -> list[str]:

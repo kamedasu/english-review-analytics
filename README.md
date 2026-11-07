@@ -69,7 +69,7 @@ Notion APIを使う場合は `.env` に設定します。
 NOTION_API_KEY=secret_xxx
 NOTION_PAGE_IDS=page_id_1,page_id_2
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-6.1-terra
 OPENAI_SUMMARY_RETRY_COUNT=3
 OPENAI_RAG_MODEL=gpt-4.1-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
@@ -163,6 +163,36 @@ Phase 1では本番データ移行と再同期を実行していません。初�
 
 [検証結果・独立スクリプト・本番適用前の確認事項](docs/phase2b_rehearsal.md) を参照してください。`excluded_sources`によって除外した空項目の再登録を防ぎ、移行時の保留候補も通常同期で無条件追加しません。Notionへの記録方法は変更不要です。
 
+## AI Learning Coach（Phase 1）
+
+`AI Learning Coach`タブに、次の2つのセクションを追加しています。
+
+- **Next Conversation Mission**：次回使ってみる表現を3件、意味・記録上の選定根拠・AIの学習提案・想定場面・例文・出典とともに表示します。目標は3つのうち2つ以上を自然に使うことです。
+- **Review Practice**：最大10問の日本語の復習問題です。英文を入力してから「答えを見る」で模範解答の一例を表示し、自己採点できます。正解は一つとは限りません。
+
+候補不足時は件数を減らし、候補0件ではAPIを呼ばず案内します。記録に再登場しないことだけで、実際に使えていないとは断定しません。表示する事実は学習記録に基づくもので、AIの選定理由・例文・場面は解釈や仮想の練習素材として区別します。
+
+### 候補・優先順位・出典
+
+`src/coach/candidates.py`が保存済みprocessedレビューを読み、Phrase Cards、More natural expressions、次回使う／追加したい表現、Weak pointsの英語・引用表現から候補を抽出します。NFKC・大小文字・連続空白・外側の引用符／句読点を正規化し、同じレビュー内の重複をまとめます。単語境界を確認して記録中の再登場を調べ、本人の使用記録は`Words and phrases actually used`と`My draft`からのみ取得します。模範例文を実使用の証拠にはしません。
+
+複数レビューで弱点になった表現、最新レビューから30日以上登場していない表現を優先し、弱点関連件数・経過日数・関心テーマで順序を決めます。基準日は最新レビューの日付です。活用形・言い換え・意味上の同一性は推定しないため、見落としはあり得ます。英語として安全に取り出せない日本語の弱点説明は候補にしません。関心テーマは同ファイルの`THEMES`で変更でき、ヨガ・自然・ランニング・カフェ・友人・日常的な誘い方を初期設定しています。
+
+AIには最大10候補のID・英語表現・短く制限した意味／Topic・出現統計だけを渡し、レビュー全文・raw・NotionページIDは送りません。Responses APIのStructured Outputsで、候補ID、意味、教育的な選定理由、想定場面、例文、復習問題、模範解答、使い方をJSONで受け取り、型・文字数・件数・候補IDの一意性と完全一致を検証します。英語表現・review_id・日付・TopicはAI出力を採用せずPython側の候補から結び付けます。先頭3候補をミッション、全候補を復習問題にします。生成した日本語・英語の教育的な品質は実際の利用で確認が必要です。
+
+### 生成・保存・コスト
+
+- `Generate Learning Plan`を押したときだけ生成します。保存後は`Regenerate`に変わり、明示的に押したときだけ新しく生成します。通常表示・再描画・タブ切り替えでCoachの生成APIは呼びません。
+- 既存の`OPENAI_API_KEY`と`OPENAI_MODEL`を使用します。1操作につき1リクエスト、出力上限6,500 tokensで、自動再試行はしません。API障害・拒否・不完全応答・JSON／出典検証エラー時は保存しません。
+- プランはストレージ配下の`coach/latest.json`に保存します。Localでは`DATA_ROOT_DIR`（未設定なら`data/`）配下、S3では既存bucket／prefix配下です。既存のraw／processed／state／RAGは更新しません。Localは既存の原子的置換、S3は単一オブジェクトPUTを使います。API失敗時は既存プランを維持し、保存失敗時も新規生成を自動で繰り返しません。
+- 生成日時・モデル・レビュー件数・元データのSHA-256・プロンプト版・保存成功回数・今回／累計token使用量を保存します。失敗したリクエストの課金は累計に含められないため、正確な金額はOpenAIの利用状況で確認してください。画面にはセッション内の生成操作回数も表示します。
+- データ追加・更新・削除を検知すると「新しい学習データがあります」と案内し、保存済みプランをそのまま表示します。再生成は自動実行しません。古い出典は生成時のスナップショットです。
+- 復習の入力・解答表示・自己採点はStreamlitセッション内で保持し、タブ切り替え後も復元します。プラン再生成時は新しいIDで初期状態にし、ブラウザのセッション終了後までは保持しません。個人別プロフィール・採点履歴の永続化・AI自動採点はPhase 1に含めません。
+
+`data/coach/`はGit管理対象外です。外部の`DATA_ROOT_DIR`を使用する場合も学習プランを公開しないでください。プランは最新版1つを保持し、過去版の履歴保存や複数ユーザーの同時再生成制御は未対応です。同じ保存先での再生成は1人ずつ行ってください。
+
+今回の開発検証は隔離Local／モックS3／モックOpenAIのみです。実運用で試す際は、既存プランのない状態で生成ボタンを1回押し、3ミッション・最大10問・実レビューの出典・解答表示を確認してください。タブ切り替えで追加生成されないことと、再生成失敗時も既存プランが表示されることを確認します。Notionの記録方法や再同期は変更不要です。
+
 ## OpenAI API設定
 
 月次サマリーでOpenAI APIを使う場合は `.env` に `OPENAI_API_KEY` を設定します。
@@ -171,11 +201,30 @@ Phase 1では本番データ移行と再同期を実行していません。初�
 OPENAI_API_KEY=sk-...
 ```
 
-モデルを変更したい場合は `OPENAI_MODEL` を設定します。未指定時は `.env.example` の既定値を使います。
+モデル設定は既存の3変数を使います。用途別の新しい変数は追加していません。
+
+| 機能 | 設定 | 未設定・空文字・空白のみの場合 | API |
+|---|---|---|---|
+| AI Learning Coach | `OPENAI_MODEL` | `gpt-4.1-mini` | Responses + Structured Outputs |
+| AnalyticsのMonthly / Quarterly / Yearly要約 | `OPENAI_MODEL` | `gpt-4.1-mini` | Responses |
+| Ask My English Historyの回答 | `OPENAI_RAG_MODEL` | `gpt-4.1-mini` | Responses |
+| RAG文書・検索クエリのEmbedding | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embeddings |
+
+設定例（実際の`.env`は自分で編集してください）：
 
 ```env
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-6.1-terra
+OPENAI_RAG_MODEL=gpt-4.1-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
+
+[OpenAI公式のGPT-6.1 Terra仕様](https://developers.openai.com/api/docs/models/gpt-6.1-terra)でResponses APIとStructured Outputsの対応を確認しています。Coachの`text.format`によるJSON Schema・`strict: true`・出典検証は維持します。実アカウントでのモデル利用権限・応答品質・コストは未検証です。
+
+`.env.example`は明示設定の例であり、自動読み込みするデフォルト設定ファイルではありません。未指定時は`src/config.py`の互換デフォルトを使い、従来の動作を維持します。値の前後の空白は除去します。モデル名を固定の許可リストにはせず、存在しないモデル・権限不足などはAPIエラーとして安全に扱います。API応答本文や通信例外の詳細は画面・例外に出しません。Coachは保存済みプランを維持、Analyticsは既存のルールベース要約へフォールバック、RAGは生成失敗を表示します。別モデルへの自動変更は行いません。
+
+`OPENAI_MODEL`だけを変えてもRAG回答・Embeddingは変わりません。CoachとAnalyticsを異なるモデルにする設定は現段階では追加せず、必要になった時点で検討します。生成モデルの変更でRAG再構築は不要です。Embeddingは既存の1,536次元ベクトルとの整合を保つため変更しないでください。同じ次元でも別のEmbeddingモデルは互換とは限りません。既存インデックスにモデル情報がある場合、増分更新は不一致を検出して再構築要求で停止します。モデル情報がない古いインデックスでは判定できないため、設定を維持してください。
+
+モデル設定変更後はStreamlitを再起動してください。既存のCoachプランは古い生成モデルのまま表示し、必要な場合だけ`Regenerate`します。Analyticsの生成済み要約が残る場合はキャッシュをクリアしてください。今後の実API確認では、Coachの生成を1回、Analyticsの要約を1回、Askの質問を1回実行し、使用モデル・JSON検証・出典・エラー表示を確認します。Notion再同期やEmbeddingモデル変更・インデックス再構築は不要です。今回のテストでは実APIを呼んでいません。
 
 一時的なOpenAI APIのserver errorに備えて、summary生成のリトライ回数を `OPENAI_SUMMARY_RETRY_COUNT` で設定できます。未設定または不正値の場合は3回です。
 

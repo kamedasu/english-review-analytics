@@ -4,7 +4,7 @@ from typing import Protocol
 
 import requests
 
-from src.config import get_settings
+from src.config import DEFAULT_EMBEDDING_MODEL, get_settings
 
 
 OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
@@ -23,7 +23,7 @@ class OpenAIEmbeddingProvider:
     def __init__(
         self,
         api_key: str,
-        model: str = "text-embedding-3-small",
+        model: str = DEFAULT_EMBEDDING_MODEL,
         batch_size: int = 64,
     ) -> None:
         if not api_key:
@@ -49,10 +49,10 @@ class OpenAIEmbeddingProvider:
             batch = texts[start : start + self._batch_size]
             try:
                 embeddings.extend(self._embed_batch(batch))
-            except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+            except (requests.RequestException, ValueError, KeyError, TypeError):
                 raise EmbeddingError(
-                    f"Embedding batch {batch_number} (documents {start + 1}-{start + len(batch)}) failed: {exc}"
-                ) from exc
+                    f"Embedding batch {batch_number} (documents {start + 1}-{start + len(batch)}) failed. Check model access and API settings."
+                ) from None
         if len(embeddings) != len(texts):
             raise EmbeddingError(
                 f"Embedding count mismatch: received {len(embeddings)} vectors for {len(texts)} texts."
@@ -67,7 +67,7 @@ class OpenAIEmbeddingProvider:
             timeout=60,
         )
         if response.status_code >= 400:
-            raise ValueError(f"OpenAI embeddings API returned {response.status_code}: {response.text[:500]}")
+            raise ValueError(f"OpenAI embeddings API returned {response.status_code}.")
         payload = response.json()
         rows = sorted(payload["data"], key=lambda item: item["index"])
         vectors = [item["embedding"] for item in rows]

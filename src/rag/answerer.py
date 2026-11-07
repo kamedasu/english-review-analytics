@@ -6,7 +6,7 @@ from typing import Protocol
 
 import requests
 
-from src.config import get_settings
+from src.config import DEFAULT_RAG_MODEL, get_settings
 from src.rag.chroma_store import RagIndexNotFoundError
 from src.rag.query_intent import parse_rag_query
 from src.rag.retriever import RagRetriever, RetrievedDocument
@@ -37,7 +37,7 @@ class RagAnswerGenerationError(RuntimeError):
 
 
 class OpenAIAnswerGenerationProvider:
-    def __init__(self, api_key: str, model: str = "gpt-4.1-mini") -> None:
+    def __init__(self, api_key: str, model: str = DEFAULT_RAG_MODEL) -> None:
         if not api_key:
             raise ValueError("OPENAI_API_KEY is required to generate a RAG answer.")
         self._api_key = api_key
@@ -62,16 +62,16 @@ class OpenAIAnswerGenerationProvider:
                 },
                 timeout=60,
             )
-        except requests.RequestException as exc:
-            raise RagAnswerGenerationError(f"OpenAI RAG answer request failed: {exc}") from exc
+        except requests.RequestException:
+            raise RagAnswerGenerationError("OpenAI RAG answer request failed (connection/timeout).") from None
         if response.status_code >= 400:
             raise RagAnswerGenerationError(
-                f"OpenAI RAG answer request failed with status {response.status_code}: {response.text[:500]}"
+                f"OpenAI RAG answer request failed with status {response.status_code}. Check model access and API settings."
             )
         try:
             answer = _extract_response_text(response.json())
-        except (ValueError, KeyError, TypeError) as exc:
-            raise RagAnswerGenerationError(f"OpenAI RAG answer response could not be read: {exc}") from exc
+        except (ValueError, KeyError, TypeError):
+            raise RagAnswerGenerationError("OpenAI RAG answer response could not be read.") from None
         if not answer:
             raise RagAnswerGenerationError("OpenAI RAG answer response did not contain output text.")
         return answer.strip()

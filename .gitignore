@@ -18,3 +18,6 @@ data/chroma/
 
 # Isolated review migration rehearsal artifacts.
 /data_migration_work_*/
+
+# Private generated learning plans.
+/data/coach/
