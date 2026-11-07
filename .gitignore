@@ -15,3 +15,6 @@ data/chroma/
 
 # Verified local data snapshots (not for version control).
 /data_backup_*/
+
+# Isolated review migration rehearsal artifacts.
+/data_migration_work_*/

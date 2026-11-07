@@ -69,10 +69,16 @@ def sync_review_blocks(
         if not source or block_counts[source] != 1:
             hold(block, "missing_or_duplicate_heading_id")
             continue
+        if source in state.excluded_sources:
+            hold(block, "excluded_source")
+            continue
         sticky_reason = state.pending_sources.get(source)
         if sticky_reason in {
             "historical_raw_only_candidate", "ambiguous_or_copied_review",
             "legacy_or_recreated_heading_needs_review", "legacy_id_already_bound",
+            "new_since_baseline_requires_review", "changed_since_baseline",
+            "deleted_since_baseline", "ambiguous_hash", "similar_or_revised_candidate",
+            "current_processed_changed_or_missing", "current_processed_changed",
         } and source not in state.source_bindings:
             hold(block, sticky_reason)
             continue

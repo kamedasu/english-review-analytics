@@ -85,3 +85,4 @@ class FetchState(BaseModel):
     source_bindings: dict[str, str] = Field(default_factory=dict)
     current_reviews: dict[str, ReviewState] = Field(default_factory=dict)
     pending_sources: dict[str, str] = Field(default_factory=dict)
+    excluded_sources: dict[str, str] = Field(default_factory=dict)
