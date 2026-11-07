@@ -235,7 +235,8 @@ def render_sync_result(debug, rag_sync_outcome: RagSyncUpdateOutcome | None = No
             "added": item.added_count,
             "updated": item.updated_count,
             "skipped": item.skipped_count,
-            "held": item.held_count,
+            "保留": item.held_count,
+            "除外済み": item.excluded_count,
             "error": item.error,
         }
         for item in debug.page_statuses

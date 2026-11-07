@@ -31,6 +31,7 @@ class PageLoadStatus:
     updated_count: int = 0
     skipped_count: int = 0
     held_count: int = 0
+    excluded_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -154,25 +155,32 @@ def sync_reviews_from_notion() -> LoadResult:
             "held": sync_result.held,
         }, ensure_ascii=False, indent=2)))
         update_page_state(state, page.page_id, page.title, page.last_edited_time, page_hash)
+        # Presentation only: keep the original held records in raw/state unchanged.
+        excluded_count = sum(item["reason"] == "excluded_source" for item in sync_result.held)
+        held_count = len(sync_result.held) - excluded_count
+        display_warnings = [warning.replace("review保留 (excluded_source,", "review除外済み (excluded_source,")
+                            for warning in parser_warnings]
         messages.append(
             f"{page.title}: added {sync_result.added_count}, "
-            f"updated {sync_result.updated_count}, skipped {sync_result.skipped_count}, held {len(sync_result.held)}"
+            f"updated {sync_result.updated_count}, skipped {sync_result.skipped_count}, "
+            f"保留 {held_count}, 除外済み {excluded_count}"
         )
-        messages.extend(parser_warnings)
+        messages.extend(display_warnings)
         page_statuses.append(
             PageLoadStatus(
                 page_id=page.page_id,
                 title=page.title,
-                status="保留あり" if sync_result.held else "同期済み",
+                status="保留あり" if held_count else "同期済み",
                 review_count=_count_reviews_for_page(all_reviews, page.page_id),
                 last_edited_time=page.last_edited_time,
                 raw_markdown_path=str(raw_markdown_path),
-                parser_warnings=parser_warnings,
+                parser_warnings=display_warnings,
                 synced_month=_month_from_title(page.title),
                 added_count=sync_result.added_count,
                 updated_count=sync_result.updated_count,
                 skipped_count=sync_result.skipped_count,
-                held_count=len(sync_result.held),
+                held_count=held_count,
+                excluded_count=excluded_count,
             )
         )
 
