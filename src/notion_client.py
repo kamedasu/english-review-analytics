@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import math
+import random
+import re
+import threading
+import time
+from typing import Callable
 
 from src.notion_parser import REVIEW_HEADER_RE, split_reviews
 
@@ -29,12 +36,57 @@ class NotionClientError(RuntimeError):
     pass
 
 
+logger = logging.getLogger(__name__)
+
+
+class _RequestLimiter:
+    """One in-flight GET and one cooldown across Streamlit sessions in this process."""
+
+    def __init__(self, *, interval: float = 0.5, clock=None, sleep=None):
+        self.interval = interval
+        self.clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
+        self.lock = threading.Lock()
+        self.next_request = 0.0
+        self.blocked_until = 0.0
+
+
+_SHARED_LIMITER = _RequestLimiter()
+
+
 class NotionClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, *, limiter=None, session=None,
+                 max_retries: int = 5, max_retry_wait: float = 120.0,
+                 jitter: Callable[[], float] | None = None,
+                 on_retry: Callable[[str], None] | None = None):
         if not api_key:
             raise NotionClientError("NOTION_API_KEY is required.")
         self.api_key = api_key
+        if max_retries < 0 or not math.isfinite(max_retry_wait) or max_retry_wait < 0:
+            raise ValueError("Invalid Notion retry limits")
         self.base_url = "https://api.notion.com/v1"
+        self.limiter = limiter if limiter is not None else _SHARED_LIMITER
+        self.session = session if session is not None else requests.Session()
+        if session is None:
+            # Retry policy lives only in _request, never in urllib3 as well.
+            self.session.mount("https://", requests.adapters.HTTPAdapter(max_retries=0))
+        self.max_retries = max_retries
+        self.max_retry_wait = max_retry_wait
+        self.jitter = jitter or (lambda: random.uniform(0.0, 0.25))
+        self.on_retry = on_retry
+        self.request_count = 0
+        self.retry_wait = 0.0
+
+    def close(self) -> None:
+        self.session.close()
+
+    def _fail(self, reason: str, *, status: int | None = None, retry: int = 0):
+        logger.error("Notion failed reason=%s status=%s retry=%d requests=%d",
+                     reason, status, retry, self.request_count)
+        raise NotionClientError(
+            f"Notion同期を中断しました: {reason} "
+            f"(HTTP={status}, retries={retry}, requests={self.request_count})。保存済みデータを使用します。"
+        ) from None
 
     def fetch_page_as_markdown(self, page_id: str) -> NotionPage:
         page = self._request("GET", f"/pages/{page_id}")
@@ -51,6 +103,7 @@ class NotionClient:
     def _fetch_all_blocks(self, block_id: str) -> list[dict]:
         blocks: list[dict] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             params = {"page_size": 100}
             if cursor:
@@ -64,26 +117,83 @@ class NotionClient:
             if not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                self._fail("invalid_or_repeated_cursor")
+            seen_cursors.add(cursor)
         return blocks
 
     def _request(self, method: str, path: str, params: dict | None = None) -> dict:
-        try:
-            response = requests.request(
-                method,
-                f"{self.base_url}{path}",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Notion-Version": NOTION_VERSION,
-                    "Content-Type": "application/json",
-                },
-                params=params,
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            raise NotionClientError(f"Notion API request failed: {exc}") from exc
-        if response.status_code >= 400:
-            raise NotionClientError(f"Notion API error {response.status_code}: {response.text}")
-        return response.json()
+        if method != "GET":
+            self._fail("unsupported_method")
+        for retry in range(self.max_retries + 1):
+            # Hold through the response and cooldown registration so another session
+            # cannot send a request before it learns of this session's 429.
+            with self.limiter.lock:
+                now = self.limiter.clock()
+                cooldown = max(0.0, self.limiter.blocked_until - now)
+                if self.retry_wait + cooldown > self.max_retry_wait:
+                    self._fail("rate_limit_wait_budget_exceeded", retry=retry)
+                wait = max(0.0, self.limiter.next_request - now, cooldown)
+                if wait:
+                    logger.info("Notion waiting seconds=%.3f rate_limited=%s retry=%d requests=%d",
+                                wait, bool(cooldown), retry, self.request_count)
+                    self.limiter.sleep(wait)
+                    self.retry_wait += cooldown
+                self.limiter.next_request = self.limiter.clock() + self.limiter.interval
+                self.request_count += 1
+                try:
+                    response = self.session.request(
+                        method, f"{self.base_url}{path}",
+                        headers={"Authorization": f"Bearer {self.api_key}",
+                                 "Notion-Version": NOTION_VERSION,
+                                 "Content-Type": "application/json"},
+                        params=params, timeout=(10, 30), allow_redirects=False,
+                    )
+                except requests.Timeout:
+                    self._fail("timeout", retry=retry)
+                except requests.RequestException:
+                    self._fail("connection_error", retry=retry)
+                try:
+                    status = response.status_code
+                    logger.info("Notion response status=%d retry=%d requests=%d",
+                                status, retry, self.request_count)
+                    if status in (429, 529):
+                        # Inspect only the reason needed by policy; never echo body text.
+                        try:
+                            body = response.json()
+                        except ValueError:
+                            body = {}
+                        additional = body.get("additional_data", {}) if isinstance(body, dict) else {}
+                        if (isinstance(additional, dict)
+                                and additional.get("rate_limit_reason") == "public_api_request_blocked"):
+                            self._fail("api_access_blocked", status=status, retry=retry)
+                        header = response.headers.get("Retry-After", "").strip()
+                        delay = float(header) if re.fullmatch(r"[0-9]+", header) else None
+                        if delay is None:
+                            delay = min(2 ** retry, 30) + self.jitter()
+                        self.limiter.blocked_until = max(
+                            self.limiter.blocked_until, self.limiter.clock() + delay)
+                        if retry >= self.max_retries:
+                            self._fail("rate_limit_retry_exhausted", status=status, retry=retry)
+                        if self.retry_wait + delay > self.max_retry_wait:
+                            self._fail("rate_limit_wait_budget_exceeded", status=status, retry=retry)
+                        logger.warning("Notion retry status=%d retry=%d wait=%.3f requests=%d",
+                                       status, retry + 1, delay, self.request_count)
+                        if self.on_retry is not None:
+                            self.on_retry(f"Notion HTTP {status}: レート制限・過負荷のため{delay:.2f}秒以上待機し再試行します（{retry + 1}/{self.max_retries}）。")
+                        continue
+                    if not 200 <= status < 300:
+                        self._fail("http_error", status=status, retry=retry)
+                    try:
+                        result = response.json()
+                    except ValueError:
+                        self._fail("invalid_json", status=status, retry=retry)
+                    if not isinstance(result, dict):
+                        self._fail("invalid_response", status=status, retry=retry)
+                    return result
+                finally:
+                    response.close()
+
 
 
 def blocks_to_markdown(blocks: list[dict]) -> str:

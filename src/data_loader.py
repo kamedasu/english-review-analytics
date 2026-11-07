@@ -87,8 +87,9 @@ def sync_reviews_from_notion() -> LoadResult:
         )
 
     pages = []
+    client = None
     try:
-        client = NotionClient(settings.notion_api_key)
+        client = NotionClient(settings.notion_api_key, on_retry=messages.append)
         months = {}
         seen_sources = set()
         for page_id in page_ids:
@@ -112,9 +113,12 @@ def sync_reviews_from_notion() -> LoadResult:
             debug=LoadDebugInfo(
                 sync_requested=True,
                 page_statuses=[PageLoadStatus(page_id="", status="エラー", error=error)],
-                messages=[error],
+                messages=[*messages, error],
             ),
         )
+    finally:
+        if client is not None:
+            client.close()
 
     all_reviews = cached_reviews
     page_statuses: list[PageLoadStatus] = []
