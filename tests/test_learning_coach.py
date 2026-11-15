@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from src.models import Review, PhraseCard, MoreNaturalExpression
-from src.coach.candidates import extract_candidates, data_version, normalize
+from src.coach.candidates import extract_candidates, data_version, normalize, choose_practice_candidates
 from src.coach.service import (CoachError, OpenAICoach, PLAN_PATH, Usage,
                                generate_plan, load_plan, is_stale)
 from src.coach.ui import restore_widget, remember_widget, widget_key, COACH_TAB_LABEL
@@ -37,22 +37,30 @@ def fixture():
     ]
 
 
-def payload(candidates):
-    return {'items': [{'candidate_id': c.candidate_id, 'meaning_ja': '気分転換する',
-                       'selection_reason_ja': '日常会話に取り入れる練習をしましょう。',
-                       'situation_ja': '仕事の後に友人と話します。', 'example_en': f'I like to {c.expression}.',
-                       'question_ja': '仕事の後に気分転換すると伝えてください。',
-                       'answer_en': f'I like to {c.expression} after work.',
-                       'usage_tip_ja': '自然な場面で使いましょう。'} for c in candidates]}
+def payload(candidates, categories=None):
+    if categories is None:
+        _, categories = choose_practice_candidates(candidates)
+    return {'items': [{'candidate_id': c.candidate_id, 'category': categories[c.candidate_id],
+                       'situation_ja': '屋外ヨガの後の気分を友人に伝え、その人の感想も自然に聞いてください。',
+                       'example_en': f'After yoga, I tried to {c.expression} with my friends because I wanted to describe the experience more naturally.',
+                       'internal_reason_ja': '記録にある表現を日常会話へ応用する練習です。',
+                       'support_suggestions': []} for c in candidates]}
+
+
+def legacy_draft(candidate_id):
+    return {'candidate_id': candidate_id, 'meaning_ja': '気分転換する',
+            'selection_reason_ja': '日常会話に使いましょう。', 'situation_ja': '仕事の後に友人と話します。',
+            'example_en': 'I feel refreshed.', 'question_ja': '仕事の後の気分を伝えてください。',
+            'answer_en': 'I feel refreshed.', 'usage_tip_ja': '自然な場面で使いましょう。'}
 
 
 class Provider:
     model = 'mock-coach-model'
     def __init__(self):
         self.calls = 0
-    def generate(self, candidates):
+    def generate(self, candidates, **kwargs):
         self.calls += 1
-        return payload(candidates), Usage(input_tokens=100, output_tokens=200, total_tokens=300)
+        return payload(candidates, kwargs.get('categories')), Usage(input_tokens=100, output_tokens=200, total_tokens=300)
 
 
 class CandidateTests(unittest.TestCase):
@@ -90,7 +98,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(unwind.last_recorded_use, date(2026, 11, 1))
 
     def test_boundaries_do_not_match_embedded_words(self):
-        reviews = [Review(review_id='a', date=date(2026, 1, 1), phrase_cards=[PhraseCard(phrase='run')]),
+        reviews = [Review(review_id='a', date=date(2026, 1, 1), phrase_cards=[PhraseCard(phrase='run into')]),
                    Review(review_id='b', date=date(2026, 2, 1), words_and_phrases_actually_used=['brunch'])]
         self.assertIsNone(extract_candidates(reviews)[0].last_recorded_use)
 
@@ -101,7 +109,7 @@ class CandidateTests(unittest.TestCase):
 
     def test_limits_and_empty(self):
         self.assertEqual(extract_candidates([]), [])
-        r = Review(review_id='r', date=date(2026, 1, 1), phrase_cards=[PhraseCard(phrase=f'phrase {i}') for i in range(20)])
+        r = Review(review_id='r', date=date(2026, 1, 1), phrase_cards=[PhraseCard(phrase=f'practice phrase {i}') for i in range(20)])
         self.assertEqual(len(extract_candidates([r])), 10)
         self.assertEqual(extract_candidates([r], limit=0), [])
 
@@ -126,21 +134,20 @@ class CoachStorageTests(unittest.TestCase):
     def generate(self, **kwargs):
         return generate_plan(self.reviews, self.storage, provider=self.provider, **kwargs)
 
-    def test_generates_three_missions_and_up_to_ten_practice_items_and_reloads(self):
+    def test_generates_up_to_ten_practice_items_and_reloads(self):
         plan = self.generate()
-        self.assertEqual(len(plan.missions), 3)
         self.assertEqual(len(plan.lessons), 6)
         self.assertEqual(load_plan(self.storage), plan)
         self.assertFalse(is_stale(plan, self.reviews))
         self.assertEqual(plan.usage.total_tokens, 300)
 
     def test_exactly_ten_questions_when_many_candidates(self):
-        self.reviews[0].phrase_cards += [PhraseCard(phrase=f'phrase {i}') for i in range(15)]
+        self.reviews[0].phrase_cards += [PhraseCard(phrase=f'practice phrase {i}') for i in range(15)]
         self.assertEqual(len(self.generate().lessons), 10)
 
     def test_insufficient_candidates_reduce_count_and_empty_never_calls_api(self):
         self.reviews = [Review(review_id='single', date=date(2026, 1, 1), phrase_cards=[PhraseCard(phrase='unwind')])]
-        self.assertEqual(len(self.generate().missions), 1)
+        self.assertEqual(len(self.generate().lessons), 1)
         other = LocalStorage(Path(self.tmp.name)/'empty')
         with self.assertRaises(CoachError):
             generate_plan([], other, provider=self.provider)
@@ -166,11 +173,11 @@ class CoachStorageTests(unittest.TestCase):
         mutations = [lambda x:x['items'][0].update(candidate_id='invented'),
                      lambda x:x['items'].append(x['items'][0]), lambda x:x['items'].pop(),
                      lambda x:x['items'][0].update(source_review_id='fake'),
-                     lambda x:x['items'][0].update(answer_en=''),
-                     lambda x:x['items'][0].update(meaning_ja=123),
-                     lambda x:x['items'][0].update(usage_tip_ja=' '),
-                     lambda x:x['items'][0].update(meaning_ja='English only'),
-                     lambda x:x['items'][0].update(answer_en='日本語だけです')]
+                     lambda x:x['items'][0].update(example_en=''),
+                     lambda x:x['items'][0].update(situation_ja=123),
+                     lambda x:x['items'][0].update(internal_reason_ja=' '),
+                     lambda x:x['items'][0].update(situation_ja='English only'),
+                     lambda x:x['items'][0].update(example_en='日本語だけです')]
         for mutation in mutations:
             value = payload(extract_candidates(self.reviews));mutation(value)
             bad = Mock(model='mock')
@@ -300,13 +307,12 @@ class UiStateTests(unittest.TestCase):
             with patch.object(ui, 'get_storage', return_value=storage), patch.object(ui, 'st') as st, patch.object(ui, 'generate_plan') as generate:
                 st.session_state = {}
                 st.button.return_value = False
-                st.segmented_control.return_value = 'Review Practice'
                 st.checkbox.return_value = False
                 ui.render_learning_coach(fixture())
                 generate.assert_not_called()
                 writes = [c.args[0] for c in st.write.call_args_list]
                 self.assertFalse(any('模範解答' in text for text in writes))
-                self.assertEqual(st.checkbox.call_count, len(plan.lessons))
+                self.assertEqual(st.checkbox.call_count, 1)
                 self.assertTrue(all(not v for k, v in st.session_state.items() if k.endswith(':visible')))
 
 
@@ -321,7 +327,7 @@ def _coach_test_app(directory, rows):
 
 
 class StreamlitCoachTests(unittest.TestCase):
-    def test_real_widgets_keep_answers_when_switching_sections(self):
+    def test_real_widgets_keep_answers_when_switching_questions(self):
         from streamlit.testing.v1 import AppTest
         with TemporaryDirectory() as directory:
             storage = LocalStorage(Path(directory))
@@ -329,19 +335,14 @@ class StreamlitCoachTests(unittest.TestCase):
             app = AppTest.from_function(_coach_test_app, args=(directory, [r.model_dump(mode='json') for r in fixture()]))
             app.run()
             self.assertEqual(len(app.exception), 0)
-            app.session_state[widget_key('navigation', 'section', 'selected')] = 'Review Practice'
-            app.run()
-            self.assertEqual(len(app.exception), 0)
             self.assertFalse(app.checkbox[0].value)
             app.text_area[0].input('My own answer').run()
             app.checkbox[0].check().run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(app.checkbox[0].value)
-            app.session_state[widget_key('navigation', 'section', 'selected')] = 'Next Conversation Mission'
-            app.run()
-            self.assertEqual(len(app.text_area), 0)
-            app.session_state[widget_key('navigation', 'section', 'selected')] = 'Review Practice'
-            app.run()
+            app.selectbox[1].select_index(1).run()
+            self.assertEqual(app.text_area[0].value, '')
+            app.selectbox[1].select_index(0).run()
             self.assertEqual(app.text_area[0].value, 'My own answer')
             self.assertTrue(app.checkbox[0].value)
             self.assertEqual(load_plan(storage), plan)

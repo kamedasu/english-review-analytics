@@ -65,7 +65,7 @@ class ModelSettingsTests(unittest.TestCase):
         self.assertEqual(request['model'], 'gpt-6.1-terra')
         self.assertEqual(request['text']['format']['type'], 'json_schema')
         self.assertTrue(request['text']['format']['strict'])
-        self.assertEqual(len(plan.missions), 3)
+        self.assertEqual(len(plan.lessons), 6)
         self.assertEqual(plan.model, 'gpt-6.1-terra')
 
     def test_analytics_uses_common_model_and_rag_remains_independent(self):
