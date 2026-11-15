@@ -4,6 +4,7 @@ from collections.abc import MutableMapping
 
 import streamlit as st
 
+from src.coach.grading import grade_answer, MAX_ANSWER_LENGTH
 from src.coach.service import CoachError, Draft, generate_plan, is_stale, load_plan
 from src.coach.profile import LEARNER_PROFILE, DEFAULT_PRACTICE_LEVEL, PRACTICE_LEVELS, CATEGORY_LABELS
 from src.models import Review
@@ -60,28 +61,47 @@ def render_learning_coach(reviews: list[Review]) -> None:
         st.info(f'選択中：{PRACTICE_LEVELS[level]["label"]}／表示中：{shown_level}。Regenerateを押すと選択したレベルで作成します。')
     st.caption(f'CEFR {LEARNER_PROFILE.cefr} ｜ {shown_level} ｜ {len(plan.lessons)}問')
     st.caption('例文は一例です。他にも自然な答えがあります。')
-    question_key = widget_key(plan.plan_id, 'navigation', 'question')
-    questions = [f'Question {i+1}：{CATEGORY_LABELS[lesson.category]}' for i, lesson in enumerate(plan.lessons)]
-    restore_widget(st.session_state, question_key, questions[0])
-    if st.session_state[question_key] not in questions:
-        st.session_state[question_key] = questions[0]
-    selected_question = st.selectbox('問題', questions, key=question_key,
-                                     on_change=remember_widget, args=(st.session_state, question_key))
-    index = questions.index(selected_question) if selected_question in questions else 0
-    lesson = plan.lessons[index]
+    st.caption('AI採点は学習支援の目安です。厳密な英語能力試験ではありません。')
+    for index, lesson in enumerate(plan.lessons):
+        category = '実践' if lesson.category == 'conversation' else CATEGORY_LABELS[lesson.category]
+        with st.container(border=True):
+            render_question(plan, lesson, index, category)
+
+
+def render_question(plan, lesson, index: int, category: str) -> None:
     candidate, draft = lesson.candidate, lesson.generated
-    st.markdown(f'### Question {index+1}：{CATEGORY_LABELS[lesson.category]}')
+    st.markdown(f'### Question {index+1}：{category}')
     targets = [candidate.expression, *(target.expression for target in candidate.related_targets)]
     st.write('練習表現：' + ' / '.join(targets))
     st.write('シチュエーション：' + (draft.question_ja if isinstance(draft, Draft) else draft.situation_ja))
     answer_key = widget_key(plan.plan_id, candidate.candidate_id, 'answer')
     restore_widget(st.session_state, answer_key, '')
-    st.text_area('自分の英文', key=answer_key, on_change=remember_widget, args=(st.session_state, answer_key))
+    answer = st.text_area('自分の英文', key=answer_key, max_chars=MAX_ANSWER_LENGTH,
+                          on_change=remember_widget, args=(st.session_state, answer_key))
+    result_key = widget_key(plan.plan_id, candidate.candidate_id, 'assessment')
+    if st.button('AIで採点する', key=widget_key(plan.plan_id, candidate.candidate_id, 'grade'),
+                 disabled=not answer.strip()):
+        cache = st.session_state.setdefault('coach_grade_cache', {})
+        try:
+            with st.spinner('英文を確認しています…'):
+                record = grade_answer(plan, lesson, answer, cache)
+            st.session_state[result_key] = record
+        except CoachError as exc:
+            st.error(str(exc))
+    record = st.session_state.get(result_key)
+    if record is not None:
+        if record.answer != answer:
+            st.caption('回答が変更されています。採点ボタンを押すと現在の回答を確認できます。')
+        else:
+            result = record.assessment
+            st.write(f'総合：{result.overall:g}点 / 100')
+            st.write(f'文法・スペル：{result.grammar_spelling} ／ 自然さ：{result.naturalness} ／ '
+                     f'表現力：{result.expression} ／ 意図の伝達：{result.communication}')
+            st.write('良かった点：' + result.strengths_ja)
+            st.write('改善ポイント：' + result.improvements_ja)
+            st.write('添削した英文：' + result.corrected_en)
+            st.write('ワンランク上の英文：' + result.enhanced_en)
     visible_key = widget_key(plan.plan_id, candidate.candidate_id, 'visible')
     restore_widget(st.session_state, visible_key, False)
     if st.checkbox('例文を見る', key=visible_key, on_change=remember_widget, args=(st.session_state, visible_key)):
         st.write('例文：' + (draft.answer_en if isinstance(draft, Draft) else draft.example_en))
-    score_key = widget_key(plan.plan_id, candidate.candidate_id, 'score')
-    restore_widget(st.session_state, score_key, '未採点')
-    st.selectbox('自己評価', ['未採点', '自然に言えた', 'ヒントがあれば言えた', 'もう一度練習する'],
-                 key=score_key, on_change=remember_widget, args=(st.session_state, score_key))

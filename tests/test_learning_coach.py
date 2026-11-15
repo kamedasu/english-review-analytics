@@ -273,7 +273,7 @@ class ProviderTests(unittest.TestCase):
 class UiStateTests(unittest.TestCase):
     def test_answer_visibility_input_and_self_score_survive_widget_cleanup(self):
         state = {'rag_input_query': 'Keep me', MAIN_TAB_STATE_KEY: ASK_HISTORY_TAB_LABEL}
-        for field, default, value in [('visible', False, True), ('answer', '', 'My answer'), ('score', '未採点', '自然に言えた')]:
+        for field, default, value in [('visible', False, True), ('answer', '', 'My answer'), ('answer_copy', '', 'Another answer')]:
             key = widget_key('plan', 'candidate', field)
             restore_widget(state, key, default)
             self.assertEqual(state[key], default)
@@ -312,7 +312,7 @@ class UiStateTests(unittest.TestCase):
                 generate.assert_not_called()
                 writes = [c.args[0] for c in st.write.call_args_list]
                 self.assertFalse(any('模範解答' in text for text in writes))
-                self.assertEqual(st.checkbox.call_count, 1)
+                self.assertEqual(st.checkbox.call_count, len(plan.lessons))
                 self.assertTrue(all(not v for k, v in st.session_state.items() if k.endswith(':visible')))
 
 
@@ -340,9 +340,9 @@ class StreamlitCoachTests(unittest.TestCase):
             app.checkbox[0].check().run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(app.checkbox[0].value)
-            app.selectbox[1].select_index(1).run()
-            self.assertEqual(app.text_area[0].value, '')
-            app.selectbox[1].select_index(0).run()
+            app.text_area[1].input('Another answer').run()
+            self.assertEqual(app.text_area[1].value, 'Another answer')
+            app.run()
             self.assertEqual(app.text_area[0].value, 'My own answer')
             self.assertTrue(app.checkbox[0].value)
             self.assertEqual(load_plan(storage), plan)
