@@ -534,3 +534,77 @@ Notionから取得した各月ページのMarkdownは `data/raw/` に保存さ�
 - ChromaまたはFAISSの具体実装を `vector_store.py` に追加する
 - `STORAGE_MODE` に応じてlocal/S3を切り替える保存層を追加する
 - Streamlit Community Cloud用にSecrets設定手順をREADMEへ追記する
+
+## Learning Data Foundation（Phase 1）
+
+`src/learning/`はprocessedを正本とする、全件再構築可能な**メモリ上の派生データ基盤**です。Analytics／Ask／Coachの既存ロジック・UIにはまだ接続していません。既存ロジックと比較できるようそのまま残し、新しいLLM／Embedding処理も追加していません。
+
+```text
+processed/reviews.json（既存・変更しない）
+  → evidence.py：原文と出典を保持した記録の抽出
+  → normalization.py：表記だけの正規化・固定expression_id
+  → catalog.py：表現一覧・履歴・期間別統計・検索
+  → 次フェーズ：Analytics / Ask / Coach（今回は未接続）
+```
+
+| モジュール | 責務 |
+|---|---|
+| `models.py` | 不変のExpression・LearningEvidence・ExpressionStatistics・関連付けモデル |
+| `normalization.py` | NFKC・大小文字・空白・引用符・末尾句読点の基本正規化 |
+| `evidence.py` | Reviewの各学習フィールドから記録を抽出 |
+| `catalog.py` | 構築、明示的な読み込み、一覧・履歴・絞り込み・統計 |
+| `profile.py` | 本人申告のCEFR B1–B2、目標・興味。練習レベルとは別概念 |
+
+### 証拠と表現
+
+- Phrase Cards、修正前後とNote、追加／次回表現、実使用欄、Weak／Good points、LINEのDraft／Natural version／修正理由、Situation／Commentを別の記録として保持します。
+- 各記録は元の`review_id`・日付・Topic・種別・ページ／見出しID・元フィールド・項目位置・原文を持ちます。カードの意味・例文・priority・source・review_status・参照ID等も原値のメタデータとして保持し、習得評価には変換しません。
+- 英語互換の構造化フィールドは、全文・句をそのまま一つの表現単位として扱います。日本語混在フィールドでは明示的な引用の英語だけを関連付けます。Weak／Good points・修正理由は、英語の文章でも引用等で表現が明示されない限りレビュー単位に留めます。
+- 修正記録は1件のまま、修正前・修正後・Noteの引用表現へ役割付きで関連付けます。`correction_record_count`は関連する記録数で、当該表現の誤用回数ではありません。前後が同じ正規化表現でも二重計上しません。複数表現へ関連付いた記録を表現間で合算すると重複するため、全体件数は`catalog.evidence`から数えます。
+- 表現を特定できない文章・空項目も`unlinked_evidence`に残します。元データにない単語・語形・修正理由を生成せず、文章から単語を切り出して学習済みとは扱いません。
+- `original_variants`には正規化前の文字列を保持します。`expression_id`は`exp:v1:<正規化表現のSHA-256>`です。同じ正規化表現なら同じIDになり、レビュー順序に依存しません。
+- Unicode NFKC、casefold、連続空白、曲がった引用符／アポストロフィ、外側の対応する引用符、末尾句読点を整理します。内部句読点・ハイフン・アポストロフィは保持し、語形・類義語・丁寧表現を意味的に統合しません。`refresh`／`refreshed`／`refreshing`、`one more time`／`One more time, please.`は別IDです。スラッシュで記録された複合表現も、推測で個別単語へ分解しません。
+- `evidence_id`は出典位置と記録内容のハッシュです。同一レビュー内の同一項目も位置が違えば別証拠です。同じ入力なら再現しますが、項目編集・移動では変わる場合があります。重複review_idは安全のため構築エラーにします。
+
+### Python API
+
+```python
+from datetime import date
+from src.learning import build_catalog, load_catalog, EvidenceType
+
+catalog = build_catalog(reviews)  # 既存Review、または旧形式を含むReview辞書の反復可能オブジェクト
+# または明示的に既存Storageを渡す。Local/S3とも読み込みのみ。
+# catalog = load_catalog(storage)
+
+expressions = catalog.all()
+expression = catalog.find('  REFRESHED!  ')  # 正規化後の完全一致。意味検索ではない。
+if expression:
+    same = catalog.get(expression.expression_id)
+    history = catalog.history(expression.expression_id)
+    feb_stats = catalog.statistics(
+        expression.expression_id,
+        start_date=date(2026, 2, 1), end_date=date(2026, 2, 28),
+    )
+
+# 範囲内の証拠だけから表現・意味・例文・統計を再構築するビュー
+view = catalog.select(
+    start_date=date(2026, 2, 1), end_date=date(2026, 2, 28),
+    topic='coffee', evidence_types=[EvidenceType.EXPLICIT_USAGE_RECORD],
+)
+# 日付条件は両端を含む。Topicは正規化後の部分一致（意味的分類ではない）。
+recent_corrections = catalog.search(last_correction_after=date(2026, 2, 1))
+recorded_usage = catalog.search(has_usage=True, last_usage_before=date(2026, 3, 1))
+not_recently_recorded = catalog.search(last_seen_before=date(2026, 1, 31))
+```
+
+`search`にも`select`と同じ期間・Topic・種別条件を指定でき、最終日条件は絞り込み後の証拠に適用します。対象期間にない表現の統計は0件・日付`None`となります。日付がない記録は最終日条件に一致しません。
+
+`unique_review_count`／`occurrence_count`はユニークreview_id数です。同日の複数レビューを区別します。`record_count`は当該表現に関連付いた全証拠数、`learning_record_count`はPhrase Card・追加・次回練習の明示的な学習対象記録数です。修正・使用・弱点数は別に計算します。使用欄への記録は正用・習得の証明ではなく、Good pointsへの記載も習得判定ではありません。
+
+### 保存・互換性・次フェーズ
+
+インポート時の設定読み込み・API実行・自動保存はありません。`load_catalog(storage)`は`processed/reviews.json`だけを明示的に読み、raw／state／RAG／プランを変更しません。永続キャッシュは導入せず、processedの変更・追加・削除は毎回の再構築で反映します。`source_data_hash`はレビュー順序に依存しない内容ハッシュ、スキーマ・抽出・正規化の版はそれぞれ`1`です。将来キャッシュを導入する際は、これらの版と内容ハッシュに加え検索条件もキーに含め、破損時は再構築します。
+
+共通プロフィールは旧Coachと同じ`level`／`cefr`を持ちますが、既存Coachのプロフィール・指紋・興味設定は今回は変更しません。将来の移行時は明示的に生成仕様を更新し、保存済みプランの互換性を維持します。
+
+接続順序は、(1)Analyticsの記録・使用・修正の区別、(2)Askの期間抽出・全件集計、(3)Coachの候補供給を推奨します。既存関数との比較テスト後に個別に切り替えます。意味グループ・難易度評価・本人申告・採点履歴・復習予定は、このIDを参照する別の派生／履歴モデルとして追加できます。現Phaseではランキングや習得状態を作りません。
