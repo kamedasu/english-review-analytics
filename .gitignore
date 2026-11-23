@@ -6,11 +6,6 @@ __pycache__/
 *.pyo
 .python-version
 
-data/raw/
-data/processed/
-data/state/
-data/chroma/
-
 .streamlit/secrets.toml
 
 # Verified local data snapshots (not for version control).
@@ -19,5 +14,5 @@ data/chroma/
 # Isolated review migration rehearsal artifacts.
 /data_migration_work_*/
 
-# Private generated learning plans.
-/data/coach/
+# Local application data (reviews, RAG, learning plans, AI summaries).
+/data/
