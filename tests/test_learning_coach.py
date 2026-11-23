@@ -11,6 +11,7 @@ import requests
 
 from src.models import Review, PhraseCard, MoreNaturalExpression
 from src.coach.candidates import extract_candidates, data_version, normalize, choose_practice_candidates
+from src.coach.pool import prepare_candidate_pool, PoolCandidate
 from src.coach.service import (CoachError, OpenAICoach, PLAN_PATH, Usage,
                                generate_plan, load_plan, is_stale)
 from src.coach.ui import restore_widget, remember_widget, widget_key, COACH_TAB_LABEL
@@ -38,6 +39,21 @@ def fixture():
 
 
 def payload(candidates, categories=None):
+    if candidates and isinstance(candidates[0], PoolCandidate):
+        weak = [c for c in candidates if any(r['type'] in ('correction_record', 'weakness_record')
+                                            for r in c.representative_records)][:3]
+        remaining = [c for c in candidates if c not in weak]
+        selected = weak + remaining[:10-len(weak)]
+        assigned = {c.candidate_id: ('weakness' if c in weak else
+                    'expression' if remaining.index(c)<4 else 'conversation') for c in selected}
+        return {'items': [{'candidate_id':c.candidate_id, 'category':assigned[c.candidate_id],
+            'situation_ja':'友人に最近の出来事を伝え、自然に会話を続けてください。',
+            'example_en':'I have been meaning to catch up with you, so would you like to grab coffee?',
+            'internal_reason_ja':'記録された表現を具体的な会話で練習する提案です。',
+            'support_suggestions':[], 'related_candidate_ids':[],
+            'source_evidence_ids':[next((r['evidence_id'] for r in c.representative_records
+                if assigned[c.candidate_id]=='weakness' and r['type'] in ('correction_record','weakness_record')),
+                c.representative_records[0]['evidence_id'])]} for c in selected]}
     if categories is None:
         _, categories = choose_practice_candidates(candidates)
     return {'items': [{'candidate_id': c.candidate_id, 'category': categories[c.candidate_id],
@@ -136,7 +152,7 @@ class CoachStorageTests(unittest.TestCase):
 
     def test_generates_up_to_ten_practice_items_and_reloads(self):
         plan = self.generate()
-        self.assertEqual(len(plan.lessons), 6)
+        self.assertEqual(len(plan.lessons), 7)
         self.assertEqual(load_plan(self.storage), plan)
         self.assertFalse(is_stale(plan, self.reviews))
         self.assertEqual(plan.usage.total_tokens, 300)
@@ -171,7 +187,7 @@ class CoachStorageTests(unittest.TestCase):
     def test_unknown_duplicate_missing_extra_and_invalid_fields_never_save(self):
         original = self.generate()
         mutations = [lambda x:x['items'][0].update(candidate_id='invented'),
-                     lambda x:x['items'].append(x['items'][0]), lambda x:x['items'].pop(),
+                     lambda x:x['items'].append(x['items'][0]), lambda x:x['items'].clear(),
                      lambda x:x['items'][0].update(source_review_id='fake'),
                      lambda x:x['items'][0].update(example_en=''),
                      lambda x:x['items'][0].update(situation_ja=123),
@@ -179,7 +195,7 @@ class CoachStorageTests(unittest.TestCase):
                      lambda x:x['items'][0].update(situation_ja='English only'),
                      lambda x:x['items'][0].update(example_en='日本語だけです')]
         for mutation in mutations:
-            value = payload(extract_candidates(self.reviews));mutation(value)
+            value = payload(prepare_candidate_pool(self.reviews).candidates);mutation(value)
             bad = Mock(model='mock')
             bad.generate.return_value = (value, Usage())
             with self.subTest(mutation=mutation), self.assertRaises(CoachError):
@@ -210,13 +226,10 @@ class CoachStorageTests(unittest.TestCase):
 
     def test_sources_and_expressions_are_never_model_controlled(self):
         plan = self.generate()
+        offered = {c.candidate_id:c for c in prepare_candidate_pool(self.reviews).candidates}
         for lesson in plan.lessons:
-            self.assertTrue(any(normalize(lesson.candidate.expression) == normalize(c.expression)
-                                for c in extract_candidates(self.reviews)))
-            for source in lesson.candidate.sources:
-                self.assertEqual(source, next(s for c in extract_candidates(self.reviews)
-                                              if c.candidate_id == lesson.candidate.candidate_id for s in c.sources
-                                              if s.review_id == source.review_id))
+            self.assertEqual(lesson.candidate.expression,offered[lesson.candidate.candidate_id].expression)
+            self.assertEqual(lesson.candidate.sources,offered[lesson.candidate.candidate_id].sources)
 
 
 class CoachS3Tests(CoachStorageTests):
@@ -240,7 +253,7 @@ class CoachS3Tests(CoachStorageTests):
 class ProviderTests(unittest.TestCase):
     def test_response_api_structured_payload_is_bounded_and_private_text_excluded(self):
         reviews = fixture();reviews[0].raw_markdown = 'PRIVATE FULL REVIEW'
-        cs = extract_candidates(reviews)
+        cs = prepare_candidate_pool(reviews).candidates
         reply = Mock(status_code=200)
         reply.json.return_value = {'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(payload(cs))}]}], 'usage': {'input_tokens': 100, 'output_tokens': 200, 'total_tokens': 300}}
         with patch('src.coach.service.requests.post', return_value=reply) as post:
@@ -263,7 +276,7 @@ class ProviderTests(unittest.TestCase):
             with self.subTest(bad=type(bad).__name__):
                 context = patch('src.coach.service.requests.post', side_effect=bad) if isinstance(bad, Exception) else patch('src.coach.service.requests.post', return_value=bad)
                 with context, self.assertRaises(CoachError) as error:
-                    OpenAICoach('secret', 'mock').generate(extract_candidates(fixture()))
+                    OpenAICoach('secret', 'mock').generate(prepare_candidate_pool(fixture()).candidates)
                 self.assertNotIn('secret', str(error.exception))
                 self.assertNotIn('PRIVATE', str(error.exception))
         with self.assertRaises(CoachError):

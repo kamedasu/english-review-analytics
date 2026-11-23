@@ -10,7 +10,7 @@ class LearnerProfile:
 
 
 LEARNER_PROFILE = LearnerProfile()
-LOGIC_VERSION = '3'
+LOGIC_VERSION = '6'
 
 # These examples supplement structural and history-based assessment. Even these
 # targets remain eligible when focused correction/confusion evidence exists.

@@ -1,3 +1,4 @@
+from src.coach.pool import prepare_candidate_pool
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -57,7 +58,7 @@ class ModelSettingsTests(unittest.TestCase):
                              ('gpt-6.1-terra', 'custom-rag', 'text-embedding-3-small'))
 
     def test_coach_uses_configured_model_and_keeps_structured_outputs(self):
-        candidates = extract_candidates(fixture())
+        candidates = prepare_candidate_pool(fixture()).candidates
         response = reply(body={'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': __import__('json').dumps(payload(candidates))}]}]})
         with TemporaryDirectory() as directory, settings_env(OPENAI_MODEL='gpt-6.1-terra'), patch('requests.post', return_value=response) as post:
             plan = generate_plan(fixture(), LocalStorage(Path(directory)))
@@ -65,7 +66,7 @@ class ModelSettingsTests(unittest.TestCase):
         self.assertEqual(request['model'], 'gpt-6.1-terra')
         self.assertEqual(request['text']['format']['type'], 'json_schema')
         self.assertTrue(request['text']['format']['strict'])
-        self.assertEqual(len(plan.lessons), 6)
+        self.assertEqual(len(plan.lessons), 7)
         self.assertEqual(plan.model, 'gpt-6.1-terra')
 
     def test_analytics_uses_common_model_and_rag_remains_independent(self):

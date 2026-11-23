@@ -1,3 +1,4 @@
+from src.coach.pool import prepare_candidate_pool
 from datetime import date
 import json
 from pathlib import Path
@@ -138,7 +139,7 @@ class IntermediateSelectionTests(unittest.TestCase):
 
 class IntermediateGenerationTests(unittest.TestCase):
     def test_profile_and_prompt_require_situational_intermediate_practice(self):
-        cs = extract_candidates(fixture())
+        cs = prepare_candidate_pool(fixture()).candidates
         response = Mock(status_code=200)
         response.json.return_value = {'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(payload(cs))}]}]}
         with patch('src.coach.service.requests.post', return_value=response) as post:
@@ -165,7 +166,7 @@ class IntermediateGenerationTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             storage = LocalStorage(Path(d))
             previous = generate_plan(fixture(), storage, provider=Provider())
-            bad = payload(extract_candidates(fixture()))
+            bad = payload(prepare_candidate_pool(fixture()).candidates)
             bad['items'][0]['example_en'] = 'Let us unwind.'
             provider = Mock(model='mock')
             provider.generate.return_value = (bad, previous.usage)
@@ -173,13 +174,13 @@ class IntermediateGenerationTests(unittest.TestCase):
             self.assertNotEqual(current.plan_id, previous.plan_id)
             self.assertEqual(current.lessons[0].generated.example_en, 'Let us unwind.')
 
-    def test_unqualified_basics_do_not_call_provider_or_save(self):
+    def test_basic_and_single_word_candidates_are_not_python_blacklisted(self):
         with TemporaryDirectory() as d:
-            storage = LocalStorage(Path(d));provider = Mock()
-            with self.assertRaises(CoachError):
-                generate_plan([review(['player', 'go back home'])], storage, provider=provider)
-            provider.generate.assert_not_called()
-            self.assertFalse(storage.exists(PLAN_PATH))
+            storage = LocalStorage(Path(d));provider = Provider()
+            plan = generate_plan([review(['player', 'go back home'])], storage, provider=provider)
+            self.assertEqual(len(plan.lessons),2)
+            self.assertEqual(provider.calls,1)
+
 
     def test_legacy_cache_loads_and_never_regenerates_automatically(self):
         with TemporaryDirectory() as d:

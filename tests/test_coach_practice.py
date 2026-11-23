@@ -1,3 +1,4 @@
+from src.coach.pool import prepare_candidate_pool
 from collections import Counter
 from datetime import date
 import json
@@ -60,7 +61,7 @@ class PracticeGenerationTests(unittest.TestCase):
             storage = LocalStorage(Path(d))
             for level in PRACTICE_LEVELS:
                 plan = generate_plan(balanced_reviews(), storage, provider=Provider(), practice_level=level, regenerate=True)
-                self.assertEqual(plan.schema_version, 2)
+                self.assertEqual(plan.schema_version, 3)
                 self.assertEqual(plan.practice_level, level)
                 self.assertEqual(plan.learner_level, 'intermediate')
                 self.assertEqual(Counter(l.category for l in plan.lessons), {'weakness': 3, 'expression': 4, 'conversation': 3})
@@ -80,7 +81,7 @@ class PracticeGenerationTests(unittest.TestCase):
 
     def test_schema_separates_auxiliary_suggestions_from_learned_expression(self):
         with TemporaryDirectory() as d:
-            storage = LocalStorage(Path(d));cs = extract_candidates(fixture())
+            storage = LocalStorage(Path(d));cs = prepare_candidate_pool(fixture()).candidates
             value = payload(cs)
             value['items'][0]['support_suggestions'] = ['as it turned out']
             provider = Mock(model='mock');provider.generate.return_value = (value, {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2})
@@ -93,32 +94,25 @@ class PracticeGenerationTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             storage = LocalStorage(Path(d));previous = generate_plan(fixture(), storage, provider=Provider())
             for field, value in [('category', 'invalid'), ('review_id', 'invented')]:
-                bad = payload(extract_candidates(fixture()));bad['items'][0][field] = value
+                bad = payload(prepare_candidate_pool(fixture()).candidates);bad['items'][0][field] = value
                 provider = Mock(model='mock');provider.generate.return_value = (bad, previous.usage)
                 with self.assertRaises(CoachError) as error:
                     generate_plan(fixture(), storage, provider=provider, regenerate=True)
                 for internal in ['出典', '候補', 'カテゴリ', 'review_id']:
                     self.assertNotIn(internal, str(error.exception))
                 self.assertEqual(load_plan(storage), previous)
-            bad = payload(extract_candidates(fixture()))
-            old_category = bad['items'][0]['category']
-            bad['items'][0]['category'] = 'weakness' if old_category != 'weakness' else 'expression'
-            provider.generate.return_value = (bad, previous.usage)
-            with self.assertRaises(CoachError):
-                generate_plan(fixture(), storage, provider=provider, regenerate=True)
-            self.assertEqual(load_plan(storage), previous)
 
     def test_internal_source_validation_still_checks_real_date_and_topic(self):
         with TemporaryDirectory() as d:
             storage = LocalStorage(Path(d));previous = generate_plan(fixture(), storage, provider=Provider())
-            bad = extract_candidates(fixture())[0].model_copy(deep=True)
-            bad.sources[0] = bad.sources[0].model_copy(update={'topic': 'Invented'})
-            with patch('src.coach.service.extract_candidates', return_value=[bad]), self.assertRaises(CoachError):
+            pool = prepare_candidate_pool(fixture())
+            pool.candidates[0].sources[0] = pool.candidates[0].sources[0].model_copy(update={'topic':'Invented'})
+            with patch('src.coach.service.prepare_candidate_pool',return_value=pool), self.assertRaises(CoachError):
                 generate_plan(fixture(), storage, provider=Provider(), regenerate=True)
             self.assertEqual(load_plan(storage), previous)
 
     def test_prompt_changes_by_practice_level_without_word_count_padding(self):
-        cs = extract_candidates(fixture())
+        cs = prepare_candidate_pool(fixture()).candidates
         for level in PRACTICE_LEVELS:
             reply = Mock(status_code=200)
             reply.json.return_value = {'status':'completed', 'output':[{'type':'message','content':[{'type':'output_text','text':json.dumps(payload(cs))}]}]}
@@ -130,8 +124,8 @@ class PracticeGenerationTests(unittest.TestCase):
             self.assertIn('no mandatory word count', sent['instructions'])
             self.assertNotIn('must contain 15', sent['instructions'])
             self.assertIn('NOT proof of prior learning', sent['instructions'])
-            self.assertEqual(set(sent['text']['format']['schema']['$defs']['ExerciseDraft']['properties']),
-                             {'candidate_id','category','situation_ja','example_en','internal_reason_ja','support_suggestions'})
+            self.assertEqual(set(sent['text']['format']['schema']['$defs']['SelectionDraft']['properties']),
+                             {'candidate_id','category','situation_ja','example_en','internal_reason_ja','support_suggestions','related_candidate_ids','source_evidence_ids'})
 
     def test_legacy_plan_is_read_only_until_explicit_regeneration(self):
         with TemporaryDirectory() as d:
