@@ -368,7 +368,7 @@ def _main_tabs_test_app():
     from src.data_loader import LoadDebugInfo, LoadResult
     from tests.test_learning_coach import fixture
     with patch.object(app, 'cached_load_reviews', return_value=LoadResult(fixture(), LoadDebugInfo())), \
-         patch.object(app, 'render_analytics', side_effect=lambda _:st.write('Analytics sentinel')), \
+         patch.object(app, 'render_analytics', side_effect=lambda _, **kwargs:st.write('Analytics sentinel')), \
          patch.object(app, 'render_ask_my_english_history', side_effect=lambda:st.write('History sentinel')), \
          patch.object(app, 'render_learning_coach', side_effect=lambda _:st.write('Coach sentinel')):
         app.main()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from html import escape
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -19,7 +21,9 @@ from src.analytics import (
     weak_points_to_dataframe,
 )
 from src.data_loader import load_local_reviews, load_or_fetch_reviews
-from src.llm_summary import generate_period_summary
+from src.analytics_context import build_analysis_context
+from src.llm_summary import period_summary, facts_only, MonthlySummaryResult
+from src.storage import get_storage, StorageError
 from src.coach.ui import COACH_TAB_LABEL, render_learning_coach
 from src.rag.answerer import RagAnswerer
 from src.rag.sync_update import RagSyncUpdateOutcome, run_rag_update_after_sync, sync_completed_successfully
@@ -75,11 +79,6 @@ def cached_load_reviews(refresh: bool):
     return load_or_fetch_reviews(refresh=refresh)
 
 
-@st.cache_data(show_spinner=False)
-def cached_period_summary(summary, reviews, period_type: str):
-    return generate_period_summary(summary, reviews, period_type)
-
-
 def main() -> None:
     st.title("English Review Analytics")
     st.markdown(TABLE_STYLE, unsafe_allow_html=True)
@@ -87,7 +86,8 @@ def main() -> None:
     with st.sidebar:
         st.header("Data")
         st.caption("通常表示はローカル保存済みデータのみを使います。")
-        sync = st.button("Sync from Notion", type="primary")
+        sync = st.button("Sync from Notion", type="primary", width="stretch")
+        summary_controls = st.container()
         if sync:
             cached_load_reviews.clear()
             st.session_state["cache_cleared"] = True
@@ -131,7 +131,7 @@ def main() -> None:
                 else:
                     st.warning("ローカル保存済みレビューがありません。必要に応じて Sync from Notion を実行してください。")
             else:
-                render_analytics(reviews)
+                render_analytics(reviews, summary_controls=summary_controls)
 
     if history_tab.open:
         with history_tab:
@@ -142,7 +142,11 @@ def main() -> None:
             render_learning_coach(reviews)
 
 
-def render_analytics(reviews: list) -> None:
+def render_analytics(reviews: list, *, summary_controls=None) -> None:
+    reviews = [r for r in reviews if r.date <= date.today()]
+    if not reviews:
+        st.info("分析できる保存済みレビューがありません。")
+        return
     period_type = st.segmented_control(
         "Aggregation",
         ["Monthly", "Quarterly", "Yearly"],
@@ -153,12 +157,61 @@ def render_analytics(reviews: list) -> None:
         st.warning("選択できる期間がありません。")
         return
 
-    with st.spinner("Generating summary..."):
-        period_summary = cached_period_summary(summary, period_reviews, period_type)
-    summary.llm_summary = period_summary.text
+    context = build_analysis_context(reviews, selected_period, period_type)
     render_metrics(summary)
-    render_period_summary(period_type, summary, period_summary)
+    current, previous = context['facts']['current'], context['facts']['previous']
+    st.caption(f"対象期間：{current['start']}〜{current['end']} ／ 比較期間：{previous['start']}〜{previous['end']}")
+    if not previous['has_records']:
+        st.caption('比較対象の記録なし（実際の学習の有無は判断できません）。')
+    else:
+        st.caption(f"前期間比：学習時間 {context['facts']['comparison']['study_minutes']['delta']:+d}分 ／ "
+                   f"学習日数 {context['facts']['comparison']['study_days']['delta']:+d}日 ／ "
+                   f"使用記録 {context['facts']['comparison']['explicit_usage_records']['delta']:+d}件 ／ "
+                   f"弱点記録 {context['facts']['comparison']['weakness_records']['delta']:+d}件")
+    if not context['facts']['complete_period'] or not context['facts']['equal_observed_days']:
+        st.caption('期間の日数・進行状況が異なるため、増減だけで成長とは判断できません。')
+    with summary_controls if summary_controls is not None else st.sidebar:
+        requested = st.button('Generate / Refresh Summary', key=f'analytics_generate:{period_type}:{selected_period}',
+                              type='primary', width='stretch')
+        st.caption(f'分析対象：{period_type} / {selected_period}')
+        status_slot = st.empty()
+    try:
+        storage = get_storage()
+        result = period_summary(context, storage)
+        if requested:
+            with st.spinner('分析を生成しています…'):
+                result = period_summary(context, storage, generate=True)
+    except StorageError:
+        result = MonthlySummaryResult(facts_only(context), 'rule-based', warning='分析の保存先を確認してください。',
+                                      error_code='cache_read')
+    with status_slot.container():
+        st.caption(analytics_status_message(result))
+        if result.generated_at:
+            try:
+                generated_at = datetime.fromisoformat(result.generated_at)
+                if generated_at.tzinfo is not None:
+                    generated_at = generated_at.astimezone(ZoneInfo('Asia/Tokyo'))
+                    st.caption('生成日時：' + generated_at.strftime('%Y-%m-%d %H:%M JST'))
+            except ValueError:
+                pass  # Old timestamp formats do not prevent status display.
+    summary.llm_summary = result.text
+    render_period_summary(period_type, summary, result)
     render_improvement_focus(period_reviews)
+
+
+def analytics_status_message(result) -> str:
+    """Present the existing storage/freshness result without another API call."""
+    if result.error_code == 'cache_read':
+        return 'AI分析の状態を確認できません。保存先の設定や読み取り状態を確認してください。'
+    if result.error_code:
+        if result.source == 'llm':
+            return 'AI分析の更新に失敗しました。以前の分析を保持しています。再度実行してください。'
+        return 'AI分析は未生成です。生成に失敗しました。表示された案内を確認して再度実行してください。'
+    if result.source != 'llm':
+        return 'AI分析は未生成です。必要に応じてGenerateしてください。'
+    if result.stale:
+        return 'AI分析の更新が必要です。Refresh Summaryを実行してください。'
+    return 'AI分析は最新です。'
 
 
 def render_ask_my_english_history() -> None:
@@ -280,7 +333,9 @@ def render_period_summary(period_type: str, summary, period_summary) -> None:
     if period_summary.source == "llm":
         st.caption(f"Generated by OpenAI API ({period_summary.model})")
     else:
-        st.caption("Generated by rule-based fallback")
+        st.caption("Pythonによる記録の集計（AIの意味分類は未実施）")
+    if period_summary.stale:
+        st.info('以前の入力・モデル・分析仕様による保存済みサマリーです。現在の数値は上部のKPIを参照し、必要に応じてRefreshしてください。')
     if period_summary.warning:
         st.warning(period_summary.warning)
     st.write(summary.llm_summary)
@@ -289,6 +344,7 @@ def render_period_summary(period_type: str, summary, period_summary) -> None:
 def render_improvement_focus(reviews: list) -> None:
     st.subheader("Improvement Focus")
 
+    st.caption("以下はレビュー内の記録です。現在の苦手や文法誤りを自動判定したものではありません。")
     st.markdown("#### Weak Points")
     weak_points_df = weak_points_to_dataframe(reviews)
     if weak_points_df.empty:
@@ -345,8 +401,8 @@ def render_metrics(summary) -> None:
     cols[1].metric("Study Days", summary.study_days)
     cols[2].metric("Longest Streak", f"{summary.longest_streak} days")
     cols[3].metric("Reviews", summary.review_count)
-    cols[4].metric("Phrases", summary.phrase_count)
-    cols[5].metric("Reused Phrases", summary.reused_phrase_count)
+    cols[4].metric("Phrase Card Records", summary.phrase_count, help="Phrase Cardsの記録件数。重複掲載を含み、ユニーク表現数ではありません。")
+    cols[5].metric("Reappearance Matches", summary.reused_phrase_count, help="従来の再利用判定件数を維持。追加表現・Phrase Cards・使用欄への後続一致で、実使用や習得の件数ではありません。")
 
 
 if __name__ == "__main__":

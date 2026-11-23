@@ -71,8 +71,15 @@ class ModelSettingsTests(unittest.TestCase):
 
     def test_analytics_uses_common_model_and_rag_remains_independent(self):
         reviews = fixture()
-        with settings_env(OPENAI_MODEL='gpt-6.1-terra'), patch('requests.post', return_value=reply()) as post:
-            result = generate_period_summary(summarize_reviews(reviews, 'all'), reviews)
+        from src.analytics_context import build_analysis_context
+        import json
+        context=build_analysis_context(reviews,'2026-09')
+        report={'observations':[{'section':'themes','assessment':'proposal',
+            'interpretation_ja':'記録した表現を会話で試す練習を提案します。',
+            'evidence_ids':[context['evidence'][0]['evidence_id']]}]}
+        with settings_env(OPENAI_MODEL='gpt-6.1-terra'), patch('requests.post', side_effect=[
+                reply(body={'status':'completed','output_text':json.dumps(report)}), reply()]) as post:
+            result = generate_period_summary(summarize_reviews(reviews, '2026-09'), reviews)
             self.assertEqual(result.source, 'llm')
             self.assertEqual(post.call_args.kwargs['json']['model'], 'gpt-6.1-terra')
             rag = OpenAIAnswerGenerationProvider.from_settings()
@@ -116,7 +123,7 @@ class ModelSettingsTests(unittest.TestCase):
 
     def test_model_errors_in_analytics_and_rag_are_sanitized(self):
         with settings_env(OPENAI_MODEL='invalid-model', OPENAI_RAG_MODEL='invalid-model'), patch('requests.post', return_value=reply(404)):
-            result = generate_period_summary(summarize_reviews(fixture(), 'all'), fixture())
+            result = generate_period_summary(summarize_reviews(fixture(), '2026-09'), fixture())
             self.assertEqual(result.source, 'rule-based')
             self.assertNotIn('PRIVATE', result.warning)
             self.assertNotIn('test-key', result.warning)
@@ -133,7 +140,7 @@ class ModelSettingsTests(unittest.TestCase):
 
     def test_transport_error_details_are_not_displayed(self):
         with settings_env(), patch('requests.post', side_effect=requests.Timeout('test-key PRIVATE')):
-            result = generate_period_summary(summarize_reviews(fixture(), 'all'), fixture())
+            result = generate_period_summary(summarize_reviews(fixture(), '2026-09'), fixture())
             self.assertNotIn('test-key', result.warning)
             with self.assertRaises(RagAnswerGenerationError) as error:
                 OpenAIAnswerGenerationProvider.from_settings().generate_answer('q', 'context')
